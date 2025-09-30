@@ -4,8 +4,8 @@ import EstablishmentsPage from './pages/EstablishmentsPage'
                 import EstablishmentDetailPage from './pages/EstablishmentDetailPage'
 import EstablishmentCreatePage from './pages/EstablishmentCreatePage'
 import TypesPage from './pages/TypesPage'
-import VariantsPage from './pages/VariantsPage'
-import AvailabilityPage from './pages/AvailabilityPage'
+import BookingsPage from './pages/BookingsPage'
+import UserBookingPage from './pages/UserBookingPage'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import { AuthProvider } from './auth/AuthContext'
@@ -29,8 +29,8 @@ const router = createBrowserRouter([
           { path: '/establishments/new', element: <EstablishmentCreatePage /> },
           { path: '/establishments/:id', element: <EstablishmentDetailPage /> },
           { path: '/types', element: <TypesPage /> },
-          { path: '/variants', element: <VariantsPage /> },
-          { path: '/availability', element: <AvailabilityPage /> },
+          { path: '/bookings', element: <BookingsPage /> },
+          { path: '/user', element: <UserBookingPage /> },
         ],
       },
     ],

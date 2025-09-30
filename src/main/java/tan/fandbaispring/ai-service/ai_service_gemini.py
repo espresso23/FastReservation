@@ -11,6 +11,7 @@ import psycopg2
 from typing import Dict, Any, List, Optional
 import logging
 from dotenv import load_dotenv
+import unicodedata
 import warnings
 from langchain_core._api import LangChainDeprecationWarning
 warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
@@ -49,13 +50,13 @@ llm = None
 embeddings = None
 vectorstore = None
 try:
-    # Thử model mới
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
+    # Thử model mới (tắt retry để không bị chờ backoff khi hết quota)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0, max_retries=0)
 except Exception as e1:
     logging.warning("Primary model init failed (gemini-2.5-flash): %s", getattr(e1, "message", str(e1)))
     try:
         # Fallback phổ biến, ổn định hơn
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.0)
+        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.0, max_retries=0)
     except Exception as e2:
         logging.error("Fallback model init failed (gemini-1.5-flash): %s", getattr(e2, "message", str(e2)))
         llm = None
@@ -87,36 +88,148 @@ class QuizRequest(BaseModel):
 
 
 # Định nghĩa lại response model để phù hợp với Output Parser
+class ImageOption(BaseModel):
+    label: str
+    image_url: str
+    value: str
+    params: Optional[Dict[str, Any]] = None
+
+
 class QuizResponseModel(BaseModel):
     quiz_completed: bool = Field(description="True nếu tất cả 7 tham số cốt lõi đã có.")
     missing_quiz: Optional[str] = Field(None, description="Câu hỏi cần hỏi người dùng tiếp theo (Nếu quizCompleted là false).")
     key_to_collect: Optional[str] = Field(None, description="Tên tham số cần thu thập tiếp theo.")
     final_params: Dict[str, Any] = Field(description="Các tham số đã được cập nhật và chuẩn hóa.")
+    image_options: Optional[List[ImageOption]] = Field(default=None, description="Các lựa chọn dạng thẻ ảnh cho câu hỏi hiện tại")
 
 # Danh sách tham số cốt lõi (dùng cho cả fallback)
 PARAM_ORDER = [
-    "city", "check_in_date", "style_vibe", "max_price",
-    "travel_companion", "duration", "amenities_priority"
+    "city", "check_in_date", "travel_companion", "duration",
+    "max_price", "amenities_priority"
 ]
 
 FALLBACK_QUESTIONS = {
     "city": "Bạn muốn đi ở thành phố nào?",
     "check_in_date": "Bạn dự định ngày bắt đầu chuyến đi là khi nào? (YYYY-MM-DD)",
-    "style_vibe": "Bạn thích phong cách/không khí nào? (ví dụ: lãng mạn, yên tĩnh, sôi động)",
-    "max_price": "Ngân sách tối đa của bạn là bao nhiêu (VND)?",
-    "travel_companion": "Bạn đi cùng ai? (một mình, cặp đôi, gia đình, bạn bè)",
+    "travel_companion": "Bạn sẽ đi cùng ai? (single, couple, family, friends hoặc nhập số người)",
     "duration": "Thời lượng chuyến đi bao lâu? (số ngày)",
+    "max_price": "Ngân sách tối đa của bạn là bao nhiêu (VND)?",
     "amenities_priority": "Bạn ưu tiên tiện ích nào? (ví dụ: hồ bơi, spa, bãi đậu xe)"
 }
 
 # Gợi ý lựa chọn cho FE (multiple choice)
 FALLBACK_OPTIONS = {
     "travel_companion": ["single", "couple", "family", "friends"],
-    "style_vibe": ["romantic", "quiet", "lively", "luxury", "nature"],
     "amenities_priority": ["Hồ bơi", "Spa", "Bãi đậu xe", "Gym", "Buffet sáng", "Gần biển"],
     "duration": ["1","2","3","4","5","6","7"],
     "has_balcony": ["yes","no"]
 }
+
+
+def image_options_from_real_data(param_key: str, final_params: Dict[str, Any]) -> Optional[List[ImageOption]]:
+    """Gợi ý ảnh từ dữ liệu thật trong Chroma metadata (ưu tiên theo city)."""
+    try:
+        if vectorstore is None:
+            return None
+        # Lấy 12 cơ sở ở city nếu có
+        city = (final_params or {}).get("city")
+        where = {"city": city} if city else None
+        coll = vectorstore._collection  # type: ignore
+        ids = coll.get(where=where, include=["metadatas", "documents"], limit=12)
+        metas = ids.get("metadatas") or []
+        options: List[ImageOption] = []
+        for m in metas:
+            if not isinstance(m, dict):
+                continue
+            name = m.get("name") or m.get("id")
+            img = m.get("image_url_main") or m.get("imageUrlMain")
+            if not img:
+                continue
+            label = f"{name}"
+            # Suy ra style nhẹ theo mô tả nếu có
+            params = None
+            if param_key == "style_vibe":
+                params = {"style_vibe": (final_params.get("style_vibe") or "romantic")}
+            options.append(ImageOption(label=label, image_url=img, value=name, params=params))
+        return options or None
+    except Exception:
+        return None
+
+
+def detect_brand_name(mixed_text: str, city: Optional[str]) -> Optional[str]:
+    try:
+        if vectorstore is None:
+            return None
+        coll = vectorstore._collection  # type: ignore
+        where = {"city": city} if city else None
+        data = coll.get(where=where, include=["metadatas"], limit=50)
+        metas = data.get("metadatas") or []
+        text_lc = (mixed_text or "").lower()
+        best = None
+        for m in metas:
+            if not isinstance(m, dict):
+                continue
+            nm = (m.get("name") or "").strip()
+            if not nm:
+                continue
+            if nm.lower() in text_lc:
+                best = nm
+                break
+        return best
+    except Exception:
+        return None
+
+
+def normalize_params(final_params: Dict[str, Any], user_prompt: str) -> Dict[str, Any]:
+    """Chuẩn hóa: gộp style_vibe vào amenities_priority; tách brand name nếu phát hiện."""
+    params = dict(final_params or {})
+    city = params.get("city")
+    mixed = f"{user_prompt} {params.get('amenities_priority','')} {params.get('style_vibe','')}"
+    brand = detect_brand_name(mixed, city)
+    if brand:
+        params["brand_name"] = brand
+    # Gộp style_vibe vào amenities_priority
+    try:
+        style = str(params.get("style_vibe") or "").strip()
+        if style:
+            am = str(params.get("amenities_priority") or "").strip()
+            if am:
+                if style.lower() not in am.lower():
+                    params["amenities_priority"] = f"{am}, {style}"
+            else:
+                params["amenities_priority"] = style
+        # Loại bỏ style_vibe sau khi gộp để toàn hệ thống chỉ dùng amenities_priority
+        if "style_vibe" in params:
+            params.pop("style_vibe", None)
+    except Exception:
+        pass
+    return params
+
+
+def apply_defaults(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Bổ sung giá trị ngầm định; suy luận num_guests từ travel_companion hoặc số nhập tự do."""
+    p = dict(params or {})
+    # Suy luận num_guests từ travel_companion nếu chưa có
+    if not p.get("num_guests") and p.get("travel_companion"):
+        tc = str(p.get("travel_companion")).strip().lower()
+        mapping = {"single": 1, "couple": 2, "family": 4, "friends": 3}
+        try:
+            p["num_guests"] = mapping.get(tc, int(float(tc)))
+        except Exception:
+            p["num_guests"] = mapping.get(tc)
+    # Chuẩn hoá các giá trị khả dĩ của num_guests (single/couple -> số)
+    if p.get("num_guests"):
+        try:
+            # Nếu là chuỗi đặc biệt, map sang số
+            ng = str(p.get("num_guests")).strip().lower()
+            mapping = {"single": 1, "couple": 2}
+            if ng in mapping:
+                p["num_guests"] = mapping[ng]
+            else:
+                p["num_guests"] = int(float(ng))
+        except Exception:
+            p["num_guests"] = 2  # mặc định an toàn
+    return p
 
 
 class SearchRequest(BaseModel):
@@ -208,12 +321,15 @@ async def generate_quiz(req: QuizRequest):
             final_params["style_vibe"] = "romantic"
         missing = next((k for k in PARAM_ORDER if not final_params.get(k)), None)
         if missing:
+            # TẠM THỜI TẮT image_options → FE chỉ hiển thị TAGS/INPUT
+            image_opts = None
             return {
                 "quiz_completed": False,
                 "missing_quiz": FALLBACK_QUESTIONS.get(missing, f"Vui lòng cung cấp '{missing}'"),
                 "key_to_collect": missing,
                 "final_params": final_params,
-                "options": FALLBACK_OPTIONS.get(missing)
+                "options": FALLBACK_OPTIONS.get(missing),
+                "image_options": image_opts
             }
         return {
             "quiz_completed": True,
@@ -258,6 +374,11 @@ async def generate_quiz(req: QuizRequest):
             "format_instructions": parser.get_format_instructions()
         })
 
+        # Chuẩn hóa + bổ sung mặc định để tránh hỏi lặp hoặc bất hợp lý
+        normalized = normalize_params(result.get('final_params', {}), req.user_prompt)
+        normalized = apply_defaults(normalized)
+        result['final_params'] = normalized
+
         if not result.get('quiz_completed'):
             for key in PARAM_ORDER:
                 if not result.get('final_params', {}).get(key):
@@ -265,6 +386,8 @@ async def generate_quiz(req: QuizRequest):
                     if not result.get('missing_quiz'):
                         result['missing_quiz'] = FALLBACK_QUESTIONS.get(key)
                     result['options'] = FALLBACK_OPTIONS.get(key)
+                    # TẮT image_options
+                    result['image_options'] = None
                     break
 
         return result
@@ -274,12 +397,15 @@ async def generate_quiz(req: QuizRequest):
         final_params = dict(req.current_params or {})
         missing = next((k for k in PARAM_ORDER if not final_params.get(k)), None)
         if missing:
+            # TẮT image_options khi fallback
+            image_opts = None
             return {
                 "quiz_completed": False,
                 "missing_quiz": FALLBACK_QUESTIONS.get(missing),
                 "key_to_collect": missing,
                 "final_params": final_params,
-                "options": FALLBACK_OPTIONS.get(missing)
+                "options": FALLBACK_OPTIONS.get(missing),
+                "image_options": image_opts
             }
         return {
             "quiz_completed": True,
@@ -309,17 +435,111 @@ async def rag_search(req: SearchRequest):
         f"Mô tả không gian và trải nghiệm."
     )
 
-    # Áp dụng filter theo city nếu có để tăng độ chính xác
-    search_kwargs = {"k": 10}
-    if city:
-        search_kwargs["filter"] = {"city": city}
-
+    # Truy vấn k lớn hơn; filter city sẽ được hậu kiểm để tránh lệch dấu/biến thể
+    search_kwargs = {"k": 30}
     results = vectorstore.similarity_search_with_score(query=query_text, **search_kwargs)
     
-    suggestions = []
+    # Chuẩn hoá so sánh không dấu
+    def strip_accents(s: Optional[str]) -> str:
+        if not s:
+            return ""
+        return ''.join(c for c in unicodedata.normalize('NFD', str(s).strip()) if unicodedata.category(c) != 'Mn').lower()
+
+    city_norm = strip_accents(city)
+    amen_norm = strip_accents(amenities)
+
+    # Khử trùng lặp theo establishment_id và hậu kiểm city/amenities
+    best_by_id: Dict[str, float] = {}
+    metas_by_id: Dict[str, Dict[str, Any]] = {}
     for doc, score in results:
-        # Lấy ID và Score để Spring Boot lọc tiếp
-        suggestions.append(SearchResult(establishment_id=doc.metadata.get('id'), relevance_score=score))
+        meta = doc.metadata or {}
+        est_id = meta.get('id')
+        if not est_id:
+            continue
+        # Hậu kiểm city (không dấu, không phân biệt hoa thường)
+        if city_norm:
+            meta_city = strip_accents(meta.get('city'))
+            if meta_city != city_norm:
+                continue
+        # Hậu kiểm amenities nếu có
+        if amenities:
+            am_list = strip_accents(meta.get('amenities_list') or meta.get('amenities'))
+            if amen_norm and amen_norm not in am_list:
+                continue
+        # Lấy điểm tốt hơn (score nhỏ hơn coi là tốt hơn)
+        prev = best_by_id.get(est_id)
+        if prev is None or score < prev:
+            best_by_id[est_id] = score
+            metas_by_id[est_id] = meta
+
+    suggestions = [SearchResult(establishment_id=eid, relevance_score=best_by_id[eid]) for eid in best_by_id.keys()]
+
+    # Fallback: nếu sau hậu kiểm rỗng, nới lỏng điều kiện lần lượt
+    if not suggestions:
+        # 1) Bỏ lọc amenities nhưng giữ city
+        best_by_id = {}
+        for doc, score in results:
+            meta = doc.metadata or {}
+            est_id = meta.get('id')
+            if not est_id:
+                continue
+            if city_norm and strip_accents(meta.get('city')) != city_norm:
+                continue
+            prev = best_by_id.get(est_id)
+            if prev is None or score < prev:
+                best_by_id[est_id] = score
+        suggestions = [SearchResult(establishment_id=eid, relevance_score=best_by_id[eid]) for eid in best_by_id.keys()]
+
+    if not suggestions:
+        # 2) Bỏ tất cả hậu kiểm, trả top-N duy nhất
+        seen = set()
+        uniq = []
+        for doc, score in results:
+            est_id = (doc.metadata or {}).get('id')
+            if not est_id or est_id in seen:
+                continue
+            seen.add(est_id)
+            uniq.append(SearchResult(establishment_id=est_id, relevance_score=score))
+            if len(uniq) >= 10:
+                break
+        suggestions = uniq
+
+    # 3) Fallback bổ sung: nếu vẫn không có cơ sở ở đúng city chứa amenities, đọc trực tiếp metadata theo city (accent đúng)
+    if city and amen_norm and vectorstore is not None:
+        try:
+            coll = vectorstore._collection  # type: ignore
+            # Thử cả city người dùng nhập và một số biến thể có dấu phổ biến
+            city_variants = {city}
+            if city_norm == 'da nang':
+                city_variants.add('Đà Nẵng')
+            if city_norm == 'ha noi':
+                city_variants.add('Hà Nội')
+            if city_norm in ('ho chi minh','tphcm','tp ho chi minh','sai gon'):
+                city_variants.update({'Hồ Chí Minh','TP Hồ Chí Minh','TP. Hồ Chí Minh'})
+
+            added = False
+            for cv in city_variants:
+                try:
+                    data = coll.get(where={"city": cv}, include=["metadatas"], limit=200)
+                except Exception:
+                    continue
+                metas = data.get('metadatas') or []
+                for m in metas:
+                    if not isinstance(m, dict):
+                        continue
+                    est_id = m.get('id')
+                    if not est_id:
+                        continue
+                    am = strip_accents(m.get('amenities_list') or m.get('amenities'))
+                    if amen_norm in am:
+                        # Thêm nếu chưa có trong suggestions
+                        if all(s.establishment_id != est_id for s in suggestions):
+                            suggestions.insert(0, SearchResult(establishment_id=est_id, relevance_score=0.25))
+                            added = True
+                if added:
+                    break
+        except Exception:
+            pass
             
     return suggestions
 

@@ -17,6 +17,18 @@ export default function EstablishmentCard({ item }: { item: Establishment }) {
           {item.name}
         </Link>
         <div className="text-sm text-slate-600 mt-1">{item.city}</div>
+        {item.descriptionLong && (
+          <div className="text-sm text-slate-700 mt-2 line-clamp-2">{item.descriptionLong}</div>
+        )}
+        {item.amenitiesList && item.amenitiesList.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {item.amenitiesList.slice(0, 6).map((a, i) => (
+              <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200">
+                {a}
+              </span>
+            ))}
+          </div>
+        )}
         <div className="flex gap-1 mt-3 overflow-hidden">
           {thumbs.map((u, idx) => (
             <img key={idx} src={u} className="w-16 h-16 object-cover rounded" />

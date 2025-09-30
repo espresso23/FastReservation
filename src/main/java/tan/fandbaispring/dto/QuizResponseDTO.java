@@ -22,4 +22,8 @@ public class QuizResponseDTO {
     // Danh sách lựa chọn đề xuất (nếu có) cho keyToCollect
     @JsonProperty("options")
     private List<String> options;
+
+    // Các lựa chọn dạng thẻ ảnh
+    @JsonProperty("image_options")
+    private List<ImageOptionDTO> imageOptions;
 }

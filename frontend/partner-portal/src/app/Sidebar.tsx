@@ -10,8 +10,9 @@ export default function Sidebar() {
       <NavLink to="/" className={itemCls}>Cơ sở của tôi</NavLink>
       <NavLink to="/establishments/new" className={itemCls}>Thêm cơ sở mới</NavLink>
       <NavLink to="/types" className={itemCls}>Loại phòng/bàn</NavLink>
-      <NavLink to="/variants" className={itemCls}>Biến thể</NavLink>
-      <NavLink to="/availability" className={itemCls}>Lịch khả dụng</NavLink>
+      <NavLink to="/bookings" className={itemCls}>Booking</NavLink>
+      <div className="text-sm text-slate-500 px-2 mt-4">User</div>
+      <NavLink to="/user" className={itemCls}>Đặt chỗ (AI)</NavLink>
     </aside>
   )
 }

@@ -16,11 +16,8 @@ import tan.fandbaispring.model.*; // Bao gồm Booking, Establishment, User, Inv
 import tan.fandbaispring.repository.*; // Bao gồm các Repository cần thiết
 import tan.fandbaispring.service.AiService;
 import tan.fandbaispring.model.UnitType;
-import tan.fandbaispring.model.UnitAvailability;
 import tan.fandbaispring.model.UnitCategory;
 import tan.fandbaispring.repository.UnitTypeRepository;
-import tan.fandbaispring.repository.UnitAvailabilityRepository;
-import tan.fandbaispring.repository.UnitVariantRepository;
 import tan.fandbaispring.service.AuthService;
 
 import java.io.IOException;
@@ -40,14 +37,26 @@ public class PartnerController {
     @Autowired private AiService aiService;
     @Autowired private Cloudinary cloudinary; // Autowired Cloudinary
     @Autowired private UnitTypeRepository unitTypeRepo;
-    @Autowired private UnitAvailabilityRepository unitAvailRepo;
-    @Autowired private UnitVariantRepository unitVariantRepo;
+    // UnitAvailability no longer used in simplified flow
 
     // --- Hàm Hỗ trợ Upload Cloudinary ---
     private String performUpload(MultipartFile file, String folder) throws IOException {
         Map uploadResult = cloudinary.uploader().upload(file.getBytes(),
                 ObjectUtils.asMap("folder", "fast_planner_" + folder));
         return uploadResult.get("url").toString();
+    }
+
+    // Đơn giản hóa: Upload file đơn lẻ để FE lấy URL (dùng cho ảnh UnitType/khác)
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> uploadSingle(@RequestPart("file") MultipartFile file,
+                                          @RequestParam(value = "folder", required = false, defaultValue = "misc") String folder) {
+        try {
+            String url = performUpload(file, folder);
+            return ResponseEntity.ok(Map.of("url", url));
+        } catch (IOException ex) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Upload thất bại: " + ex.getMessage()));
+        }
     }
 
     // --- API 1: Đăng nhập (Giữ nguyên logic kiểm tra ID) ---
@@ -184,72 +193,12 @@ public class PartnerController {
         return ResponseEntity.status(HttpStatus.CREATED).body(saved);
     }
 
-    // Variant APIs
-    @PostMapping("/types/{typeId}/variants")
-    public ResponseEntity<?> createVariant(@PathVariable Long typeId, @RequestBody tan.fandbaispring.model.UnitVariant variant) {
-        variant.setTypeId(typeId);
-        return ResponseEntity.status(HttpStatus.CREATED).body(unitVariantRepo.save(variant));
-    }
-
-    @GetMapping("/types/{typeId}/variants")
-    public ResponseEntity<?> listVariants(@PathVariable Long typeId) {
-        return ResponseEntity.ok(unitVariantRepo.findByTypeId(typeId));
-    }
-
-    // Bulk availability theo variant
-    @PostMapping("/variants/{variantId}/availability/bulk")
-    public ResponseEntity<?> bulkAvailabilityByVariant(
-            @PathVariable Long variantId,
-            @RequestParam String start,
-            @RequestParam String end,
-            @RequestParam Integer totalUnits,
-            @RequestParam(required = false) Long overridePrice
-    ) {
-        java.time.LocalDate s = java.time.LocalDate.parse(start);
-        java.time.LocalDate e = java.time.LocalDate.parse(end);
-        for (java.time.LocalDate d = s; !d.isAfter(e); d = d.plusDays(1)) {
-            UnitAvailability ua = unitAvailRepo.findByTypeIdAndDate(0L, d) // placeholder
-                    .orElseGet(UnitAvailability::new);
-            ua.setVariantId(variantId);
-            ua.setDate(d);
-            ua.setTotalUnits(totalUnits);
-            if (ua.getUnitsBooked() == null) ua.setUnitsBooked(0);
-            ua.setOverridePrice(overridePrice);
-            // gán typeId theo variant
-            unitVariantRepo.findById(variantId).ifPresent(v -> ua.setTypeId(v.getTypeId()));
-            unitAvailRepo.save(ua);
-        }
-        return ResponseEntity.ok(Map.of("message", "Generated availability for variant"));
-    }
 
     @GetMapping("/types/{establishmentId}")
     public ResponseEntity<?> listTypes(@PathVariable String establishmentId) {
         return ResponseEntity.ok(unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishmentId));
     }
 
-    // Bulk sinh Availability theo khoảng ngày
-    @PostMapping("/types/{typeId}/availability/bulk")
-    public ResponseEntity<?> bulkAvailability(
-            @PathVariable Long typeId,
-            @RequestParam String start,
-            @RequestParam String end,
-            @RequestParam Integer totalUnits,
-            @RequestParam(required = false) Long overridePrice
-    ) {
-        java.time.LocalDate s = java.time.LocalDate.parse(start);
-        java.time.LocalDate e = java.time.LocalDate.parse(end);
-        for (java.time.LocalDate d = s; !d.isAfter(e); d = d.plusDays(1)) {
-            UnitAvailability ua = unitAvailRepo.findByTypeIdAndDate(typeId, d)
-                    .orElseGet(UnitAvailability::new);
-            ua.setTypeId(typeId);
-            ua.setDate(d);
-            ua.setTotalUnits(totalUnits);
-            if (ua.getUnitsBooked() == null) ua.setUnitsBooked(0);
-            ua.setOverridePrice(overridePrice);
-            unitAvailRepo.save(ua);
-        }
-        return ResponseEntity.ok(Map.of("message", "Generated availability"));
-    }
 
     // --- API 4: Xem Booking của tôi (Giữ nguyên) ---
     @GetMapping("/bookings/{ownerId}")
@@ -263,6 +212,46 @@ public class PartnerController {
         List<Booking> bookings = bookingRepo.findByPartnerId(ownerId);
         return ResponseEntity.ok(bookings);
     }
+
+    // Cập nhật trạng thái booking (Partner)
+    @PostMapping("/bookings/{bookingId}/status")
+    public ResponseEntity<?> updateBookingStatus(@PathVariable Long bookingId, @RequestBody Map<String, String> body) {
+        String status = body.get("status");
+        Optional<Booking> opt = bookingRepo.findById(bookingId);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message","Booking không tồn tại"));
+        try {
+            Booking b = opt.get();
+            BookingStatus oldStatus = b.getStatus();
+            BookingStatus newStatus = BookingStatus.valueOf(status);
+
+            // Điều chỉnh tồn kho nếu thay đổi giữa CONFIRMED và CANCELLED
+            if (oldStatus != newStatus) {
+                if (oldStatus == BookingStatus.CONFIRMED && newStatus == BookingStatus.CANCELLED) {
+                    inventoryRepo.findByEstablishmentIdAndDateAndItemType(b.getEstablishmentId(), b.getStartDate(), b.getBookedItemType())
+                            .ifPresent(inv -> {
+                                int booked = inv.getUnitsBooked();
+                                inv.setUnitsBooked(Math.max(0, booked - 1));
+                                inventoryRepo.save(inv);
+                            });
+                }
+                if (oldStatus == BookingStatus.CANCELLED && newStatus == BookingStatus.CONFIRMED) {
+                    inventoryRepo.findByEstablishmentIdAndDateAndItemType(b.getEstablishmentId(), b.getStartDate(), b.getBookedItemType())
+                            .ifPresent(inv -> {
+                                int booked = inv.getUnitsBooked();
+                                inv.setUnitsBooked(booked + 1);
+                                inventoryRepo.save(inv);
+                            });
+                }
+            }
+
+            b.setStatus(newStatus);
+            bookingRepo.save(b);
+            return ResponseEntity.ok(Map.of("message","Cập nhật thành công"));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("message","Trạng thái không hợp lệ"));
+        }
+    }
+
 
     // --- API 5: Xem Cơ sở của tôi (Mới) ---
     @GetMapping("/establishments/{ownerId}")

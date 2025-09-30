@@ -1,0 +1,333 @@
+import { useState } from 'react'
+import { PaperAirplaneIcon, ArrowPathIcon } from '@heroicons/react/24/solid'
+import { confirmBooking, processBooking } from '../api/user'
+import type { QuizResponse, Suggestion } from '../api/user'
+
+export default function UserBookingPage() {
+  const [prompt, setPrompt] = useState('Tôi muốn đi Đà Nẵng ngày 2025-10-10 2 đêm, phòng có ban công')
+  const [currentParams, setCurrentParams] = useState<Record<string, any>>({})
+  const [quiz, setQuiz] = useState<QuizResponse | null>(null)
+  const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [selectedOpt, setSelectedOpt] = useState<string>('')
+  const [customOpt, setCustomOpt] = useState<string>('')
+  const [selectedAmenities, setSelectedAmenities] = useState<string[]>([])
+  const [selectedImages, setSelectedImages] = useState<{url:string,label:string,params?:Record<string,any>}[]>([])
+
+  type ChatMessage = { role: 'assistant' | 'user', text: string }
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { role: 'assistant', text: 'Xin chào! Hãy mô tả ngắn gọn nhu cầu đặt chỗ của bạn.' }
+  ])
+
+  // Fallback tag choices nếu BE không gửi options
+  const defaultOptions: Record<string, string[]> = {
+    style_vibe: ['romantic','quiet','lively','luxury','nature'],
+    amenities_priority: ['Hồ bơi','Spa','Bãi đậu xe','Gym','Buffet sáng','Gần biển'],
+    duration: ['1','2','3','4','5','6','7'],
+    has_balcony: ['yes','no'],
+    num_guests: ['single','couple','3','4','5','6']
+  }
+
+  const send = async (override?: { params?: Record<string, any>, prompt?: string, auto?: boolean }) => {
+    setLoading(true); setMsg(null)
+    try {
+      const pmt = (override?.prompt ?? prompt) || ''
+      const paramsToSend = override?.params ?? currentParams
+      // Ghi message user
+      if (pmt.trim()) setMessages(prev => [...prev, { role: 'user', text: pmt.trim() }])
+      const res = await processBooking({ userPrompt: pmt, currentParams: paramsToSend })
+      if (Array.isArray(res)) {
+        setSuggestions(res)
+        setQuiz(null)
+        setMessages(prev => [
+          ...prev,
+          { role: 'assistant', text: res.length > 0 ? `Mình đã có ${res.length} gợi ý phù hợp, bạn chọn để đặt nhé.` : 'Chưa tìm thấy kết quả phù hợp, bạn có muốn nới tiêu chí không?' }
+        ])
+      } else {
+        setQuiz(res)
+        // Đồng bộ các tham số đã suy luận được từ server
+        if (res.final_params) {
+          setCurrentParams(prev => ({ ...prev, ...res.final_params }))
+        }
+        setSuggestions(null)
+        setSelectedOpt('')
+        setCustomOpt('')
+        setSelectedAmenities([])
+        setSelectedImages([])
+        if (!res.quiz_completed && res.missing_quiz) {
+          setMessages(prev => [...prev, { role: 'assistant', text: res.missing_quiz! }])
+        } else if (res.quiz_completed && !override?.auto) {
+          const merged = { ...paramsToSend, ...(res.final_params || {}) }
+          setTimeout(() => { send({ params: merged, prompt: '', auto: true }) }, 0)
+        }
+      }
+    } finally { setLoading(false) }
+  }
+
+  const book = async (s: Suggestion) => {
+    setLoading(true); setMsg(null)
+    try {
+      const payload = {
+        userId: 1,
+        establishmentId: s.establishmentId,
+        bookedItemType: s.itemType || s.floorArea || 'TYPE',
+        startDate: currentParams.check_in_date || new Date().toISOString().slice(0,10),
+        duration: Number(currentParams.duration || 1),
+        totalPriceVnd: s.finalPrice || 0,
+        bookedFloorArea: s.floorArea,
+        numGuests: Number(currentParams.num_guests || 1)
+      }
+      await confirmBooking(payload)
+      setMsg('Đặt chỗ thành công!')
+    } catch (e:any) {
+      setMsg(e?.response?.data?.message || 'Đặt chỗ thất bại')
+    } finally { setLoading(false) }
+  }
+
+  const keyLabel = (k?: string) => {
+    switch (k) {
+      case 'city': return 'Thành phố';
+      case 'check_in_date': return 'Ngày nhận';
+      case 'duration': return 'Số đêm';
+      case 'max_price': return 'Ngân sách tối đa (VND)';
+      case 'style_vibe': return 'Phong cách/không gian';
+      case 'travel_companion': return 'Đi cùng ai';
+      case 'amenities_priority': return 'Tiện ích ưu tiên';
+      case 'has_balcony': return 'Có ban công?';
+      case 'num_guests': return 'Số người';
+      default: return k || ''
+    }
+  }
+
+  const humanizeValue = (k: string, v: string) => {
+    if (k === 'num_guests') {
+      const vv = (v || '').toLowerCase()
+      if (vv === 'single') return '1 người'
+      if (vv === 'couple') return '2 người'
+      const n = Number(vv)
+      if (!isNaN(n) && n > 0) return `${n} người`
+    }
+    if (k === 'has_balcony') {
+      if ((v || '').toLowerCase() === 'yes') return 'Có'
+      if ((v || '').toLowerCase() === 'no') return 'Không'
+    }
+    return v
+  }
+
+  const renderInputForKey = (k?: string) => {
+    if (!k) return null
+    if (k === 'check_in_date') return (
+      <input type="date" className="border rounded px-2 py-1" value={customOpt} onChange={(e)=>setCustomOpt(e.target.value)} />
+    )
+    if (k === 'duration' || k === 'max_price' || k === 'num_guests') return (
+      <input type="number" className="border rounded px-2 py-1" value={customOpt} onChange={(e)=>setCustomOpt(e.target.value)} />
+    )
+    return null
+  }
+
+  const answerAndNext = async () => {
+    const k = quiz?.key_to_collect
+    if (!k) return
+    let val = ''
+    if (k === 'amenities_priority') {
+      if (selectedAmenities.length === 0) return
+      val = selectedAmenities.join(', ')
+    } else if (quiz?.image_options && quiz.image_options.length > 0) {
+      // Multi-select images: merge params inferred from selected images
+      if (selectedImages.length === 0) return
+      const mergedParams: Record<string, any> = {}
+      selectedImages.forEach(it => {
+        if (it.params) Object.assign(mergedParams, it.params)
+      })
+      setCurrentParams(prev => ({ ...prev, ...mergedParams }))
+      val = selectedImages.map(it=>it.label).join(', ')
+    } else if (k === 'duration' || k === 'max_price' || k === 'check_in_date') {
+      if (!customOpt.trim()) return
+      val = customOpt.trim()
+    } else {
+      if (!selectedOpt.trim()) return
+      val = selectedOpt.trim()
+    }
+
+    const nextParams = { ...currentParams, [k]: k==='duration'||k==='max_price' ? Number(val) : val }
+    setCurrentParams(nextParams)
+    const userText = `Tôi chọn ${keyLabel(k)}: ${humanizeValue(k, val)}`
+    setPrompt('')
+    await send({ params: nextParams, prompt: userText })
+  }
+
+  // Zero-result relax actions
+  const relaxAndSearch = async (action: 'more_budget'|'drop_amenities'|'any_style'|'shift_date') => {
+    const np = { ...currentParams }
+    if (action === 'more_budget') {
+      const cur = Number(np.max_price || 0)
+      np.max_price = cur > 0 ? Math.round(cur * 1.2) : 1000000
+    }
+    if (action === 'drop_amenities') {
+      delete np.amenities_priority
+    }
+    if (action === 'any_style') {
+      delete np.style_vibe
+    }
+    if (action === 'shift_date') {
+      try {
+        const d = new Date(np.check_in_date)
+        d.setDate(d.getDate() + 1)
+        np.check_in_date = d.toISOString().slice(0,10)
+      } catch {}
+    }
+    setCurrentParams(np)
+    await send({ params: np, prompt: 'Hãy mở rộng tiêu chí giúp mình' })
+  }
+
+  return (
+    <div>
+      <h1 className="text-xl font-semibold mb-4">Trợ lý đặt chỗ</h1>
+      {/* Chat window */}
+      <div className="rounded border bg-white p-3 min-h-[280px] max-h-[420px] overflow-auto">
+        <div className="space-y-2">
+          {messages.map((m,idx)=> (
+            <div key={idx} className={`flex ${m.role==='user'?'justify-end':''}`}>
+              <div className={`${m.role==='user'?'bg-slate-900 text-white':'bg-slate-100 text-slate-900'} px-3 py-2 rounded-2xl max-w-[80%]`}>{m.text}</div>
+            </div>
+          ))}
+          {/* When a quiz step comes, render choices as chips/images in the chat */}
+          {quiz && !quiz.quiz_completed && (
+            <div className="flex">
+              <div className="bg-slate-50 border px-3 py-2 rounded-2xl w-full">
+                {/* Options as images */}
+                {quiz.image_options && quiz.image_options.length > 0 && (
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {quiz.image_options.map((opt,i)=> {
+                      const on = selectedImages.some(x=>x.url===opt.image_url)
+                      return (
+                      <button key={i} type="button" onClick={()=>{
+                        setSelectedOpt(opt.value); setCustomOpt(opt.value);
+                        setSelectedImages(prev => on ? prev.filter(x=>x.url!==opt.image_url) : [...prev, { url: opt.image_url, label: opt.label, params: (opt as any).params }])
+                      }} className={`group border rounded overflow-hidden text-left ${on? 'ring-2 ring-slate-900' : ''}`}>
+                        <div className="aspect-video bg-slate-100 overflow-hidden">
+                          <img src={opt.image_url} alt={opt.label} className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" />
+                        </div>
+                        <div className="p-2 text-sm">{opt.label}</div>
+                      </button>
+                      )
+                    })}
+                  </div>
+                )}
+                {/* Options as selectable chips (single-select) */}
+                {!quiz.image_options && quiz.key_to_collect !== 'amenities_priority' && (
+                  <div className="flex flex-wrap gap-2">
+                    {(quiz.options && quiz.options.length>0 ? quiz.options : (defaultOptions[quiz.key_to_collect as string]||[])).map((o,i)=> (
+                      <button key={i} type="button" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }} className={`px-2 py-1 border rounded-full text-sm ${selectedOpt===o?'bg-slate-900 text-white border-slate-900':'bg-white'}`}>{o}</button>
+                    ))}
+                  </div>
+                )}
+                {/* Amenities as multi-select tags */}
+                {quiz.key_to_collect === 'amenities_priority' && (
+                  <div className="flex flex-wrap gap-2">
+                    {((quiz.options && quiz.options.length>0) ? quiz.options : (defaultOptions['amenities_priority']||[])).map((o,i)=> {
+                      const on = selectedAmenities.includes(o)
+                      return (
+                        <button key={i} type="button" onClick={()=>{
+                          setSelectedAmenities(prev => on ? prev.filter(x=>x!==o) : [...prev, o])
+                        }} className={`px-2 py-1 border rounded-full text-sm ${on?'bg-slate-900 text-white border-slate-900':'bg-white'}`}>{o}</button>
+                      )
+                    })}
+                  </div>
+                )}
+                {/* Inputs only for date/price/duration */}
+                {renderInputForKey(quiz.key_to_collect)}
+                <div className="mt-3">
+                  <button className="px-3 py-2 border rounded inline-flex items-center gap-2" onClick={answerAndNext} disabled={loading} title="Gửi">
+                    <PaperAirplaneIcon className="w-4 h-4" />
+                  </button>
+                </div>
+                {/* Collected params summary as inline chips */}
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  {Object.entries(currentParams).map(([k,v])=> (
+                    <span key={k} className="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200">{keyLabel(k)}: {String(v)}</span>
+                  ))}
+                </div>
+                {/* Selected thumbnails history */}
+                {selectedImages.length>0 && (
+                  <div className="mt-3 flex gap-2">
+                    {selectedImages.map((it,idx)=>(
+                      <img key={idx} src={it.url} alt={it.label} className="w-16 h-16 object-cover rounded" />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Input bar: chỉ hiển thị khi chưa vào quiz, hoặc quiz đã hoàn thành */}
+      {(!quiz || quiz.quiz_completed) && (
+        <div className="mt-2 flex items-center gap-2">
+          <input className="flex-1 border rounded px-3 py-2" placeholder="Nhập yêu cầu..." value={prompt} onChange={(e)=>setPrompt(e.target.value)} />
+          <button className="px-4 py-2 rounded bg-slate-900 text-white" onClick={()=>send()} disabled={loading}>Gửi</button>
+          {loading && <ArrowPathIcon className="w-4 h-4 animate-spin text-slate-500" />}
+          {msg && <span className="text-green-700">{msg}</span>}
+        </div>
+      )}
+
+      {quiz && quiz.quiz_completed && (
+        <div className="mt-4 rounded border p-3 bg-white">
+          <div className="font-medium mb-2">Tham số cuối</div>
+          <pre className="text-xs bg-slate-50 p-2 rounded overflow-auto">{JSON.stringify(quiz.final_params, null, 2)}</pre>
+          <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+            <input className="border rounded px-2 py-1" placeholder="Thành phố" value={currentParams.city||''} onChange={(e)=>setCurrentParams({ ...currentParams, city: e.target.value })} />
+            <input type="date" className="border rounded px-2 py-1" value={currentParams.check_in_date||''} onChange={(e)=>setCurrentParams({ ...currentParams, check_in_date: e.target.value })} />
+            <input type="number" className="border rounded px-2 py-1" placeholder="Số đêm" value={currentParams.duration||''} onChange={(e)=>setCurrentParams({ ...currentParams, duration: Number(e.target.value||0) })} />
+            <input type="number" className="border rounded px-2 py-1" placeholder="Ngân sách tối đa" value={currentParams.max_price||''} onChange={(e)=>setCurrentParams({ ...currentParams, max_price: Number(e.target.value||0) })} />
+          </div>
+          <div className="mt-2">
+            <button className="px-3 py-1 border rounded" onClick={()=>{ setPrompt(''); send({ params: currentParams, prompt: '' }) }} disabled={loading}>Tìm gợi ý</button>
+          </div>
+        </div>
+      )}
+
+      {suggestions && (
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+          {suggestions.map(s => (
+            <div key={s.establishmentId + (s.itemType||'')} className="border rounded overflow-hidden bg-white">
+              {s.itemImageUrl || s.imageUrlMain ? (
+                <div className="aspect-video bg-slate-100">
+                  <img src={s.itemImageUrl || s.imageUrlMain!} className="w-full h-full object-cover" />
+                </div>
+              ) : null}
+              <div className="p-3">
+                <div className="font-medium">{s.establishmentName}</div>
+                <div className="text-sm text-slate-600">{s.city}</div>
+                <div className="mt-1 text-sm">Loại: <span className="font-medium">{s.itemType || s.floorArea}</span></div>
+                <div className="text-sm">Giá: {s.finalPrice?.toLocaleString()} đ</div>
+                <div className="text-xs text-slate-600">Còn: {s.unitsAvailable}</div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button className="px-3 py-1 border rounded" onClick={()=>book(s)} disabled={loading}>Book ngay</button>
+                  <a className="px-3 py-1 border rounded" href={`/establishments/${s.establishmentId}`} target="_blank" rel="noreferrer">Xem chi tiết</a>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Zero-result helper */}
+      {suggestions && suggestions.length === 0 && (
+        <div className="mt-3 p-3 border rounded bg-white text-sm">
+          <div className="mb-2 text-slate-700">Không có kết quả khớp. Bạn muốn nới tiêu chí?</div>
+          <div className="flex flex-wrap gap-2">
+            <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</button>
+            <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</button>
+            <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('any_style')}>Bất kỳ phong cách</button>
+            <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+

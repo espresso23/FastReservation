@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { createType, listMyEstablishments, listTypes } from '../api/partner'
+import { createType, listMyEstablishments, listTypes, uploadImage } from '../api/partner'
 import type { Establishment, UnitType } from '../types'
 import { useAuth } from '../auth/AuthContext'
 import { unitCodePresets } from '../constants/unitPresets'
@@ -22,6 +22,7 @@ export default function TypesPage() {
     hasBalcony: false,
     basePrice: 0,
     depositAmount: 0,
+    totalUnits: 1,
     imageUrls: [],
     active: true,
   } as any)
@@ -62,17 +63,21 @@ export default function TypesPage() {
   return (
     <div>
       <h1 className="text-xl font-semibold mb-4">Loại phòng/bàn</h1>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div>
-          <label className="block text-sm mb-1">Chọn cơ sở</label>
-          <select className="w-full border rounded px-3 py-2" value={selectedEst} onChange={(e)=>setSelectedEst(e.target.value)}>
-            <option value="">-- Chọn --</option>
-            {establishments.map((e)=>(<option key={e.id} value={e.id}>{e.name}</option>))}
-          </select>
-          {currentEst && <div className="text-sm text-slate-600 mt-1">{currentEst.city}</div>}
+      {/* Thanh chọn cơ sở tách riêng */}
+      <div className="mb-4 rounded border border-slate-200 bg-white p-3 flex items-center gap-3">
+        <div className="text-sm text-slate-600">Chọn cơ sở</div>
+        <select className="border rounded px-3 py-2" value={selectedEst} onChange={(e)=>setSelectedEst(e.target.value)}>
+          <option value="">-- Chọn --</option>
+          {establishments.map((e)=>(<option key={e.id} value={e.id}>{e.name}</option>))}
+        </select>
+        {currentEst && <div className="text-sm text-slate-500">{currentEst.city}</div>}
+      </div>
 
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-start">
+        <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm w-full">
+          <div className="font-medium mb-3">Tạo loại mới</div>
           {selectedEst && (
-            <form onSubmit={onCreate} className="mt-4 space-y-3">
+            <form onSubmit={onCreate} className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <select className="border rounded px-3 py-2" value={form.category as any} onChange={(e)=>setForm({...form, category: e.target.value as any})}>
                   <option value="ROOM">ROOM</option>
@@ -122,6 +127,31 @@ export default function TypesPage() {
                     ))}
                 </div>
               </div>
+              {/* Hình ảnh (upload hoặc URL) */}
+              <div className="space-y-2">
+                <label className="block text-xs text-slate-600 mb-1">Hình ảnh</label>
+                <div className="mb-2">
+                  <input type="file" accept="image/*" onChange={async (e)=>{
+                    const f = e.target.files?.[0]
+                    if (!f) return
+                    const { url } = await uploadImage(f, 'unit_type')
+                    setForm(prev => ({ ...prev, imageUrls: [ ...(prev.imageUrls||[]), url ] }))
+                    e.currentTarget.value = ''
+                  }} />
+                </div>
+                {(form.imageUrls && form.imageUrls.length>0) && (
+                  <div className="grid grid-cols-4 gap-2">
+                    {form.imageUrls.map((u,idx)=> (
+                      <div key={idx} className="relative group rounded overflow-hidden">
+                        <img src={u} className="w-full h-20 object-cover" />
+                        <button type="button" className="absolute top-1 right-1 text-xs px-1 py-0.5 rounded bg-white/90 border hidden group-hover:block" onClick={()=>{
+                          setForm(f=>({ ...f, imageUrls: (f.imageUrls||[]).filter((_,i)=>i!==idx) }))
+                        }}>x</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs text-slate-600 mb-1">Sức chứa</label>
@@ -130,6 +160,12 @@ export default function TypesPage() {
                 <div className="flex items-end">
                   <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!form.hasBalcony} onChange={(e)=>setForm({...form, hasBalcony:e.target.checked})} /> Ban công</label>
                 </div>
+                <div>
+                  <label className="block text-xs text-slate-600 mb-1">Tổng số phòng/bàn</label>
+                  <input type="number" className="w-full border rounded px-3 py-2" value={form.totalUnits as any} onChange={(e)=>setForm({...form, totalUnits:Number(e.target.value||0)})} />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
                 <div>
                   {form.category === 'ROOM' ? (
                     <>
@@ -157,11 +193,11 @@ export default function TypesPage() {
             </form>
           )}
         </div>
-        <div className="md:col-span-2">
-          <div className="text-sm text-slate-600 mb-2">Các loại đã tạo</div>
-          <div className="space-y-2">
+        <div className="md:col-span-2 rounded-lg border border-slate-200 bg-white p-4 shadow-sm w-full">
+          <div className="font-medium mb-3">Các loại đã tạo</div>
+          <div className="space-y-2 max-h-[60vh] overflow-auto pr-2">
             {types.map((t)=>(
-              <div key={t.id} className="border rounded p-3">
+              <div key={t.id} className="border rounded-lg p-3 shadow-sm">
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="font-medium">{t.name} ({t.code})</div>
@@ -186,6 +222,17 @@ export default function TypesPage() {
                     <div>Ban công: {t.hasBalcony ? 'Có' : 'Không'}</div>
                     {t.category==='ROOM' && <div>Giá cơ bản: {t.basePrice?.toLocaleString()} đ</div>}
                     {t.category==='TABLE' && <div>Tiền cọc: {t.depositAmount ? t.depositAmount.toLocaleString() + ' đ' : 'Không'}</div>}
+                    <div className="col-span-2">
+                      {(t.imageUrls && t.imageUrls.length>0) ? (
+                        <div className="grid grid-cols-6 gap-2">
+                          {t.imageUrls.map((u,idx)=> (
+                            <img key={idx} src={u} className="w-full h-20 object-cover rounded" />
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-slate-500">Chưa có hình ảnh</div>
+                      )}
+                    </div>
                     <div className="col-span-2">
                       <a href={`/variants?typeId=${t.id}`} className="text-blue-600">Quản lý biến thể cho loại này</a>
                     </div>

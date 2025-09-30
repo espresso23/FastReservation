@@ -16,4 +16,7 @@ public class BookingConfirmationRequest {
     // --- Các trường CẦN THIẾT cho Inventory/Booking (MỚI) ---
     private String bookedItemType;    // Tên loại phòng/bàn đã chọn
     private String bookedFloorArea;   // Vị trí/Tầng đã chọn
+
+    // Số lượng khách để kiểm tra sức chứa loại phòng/bàn
+    private Integer numGuests;
 }

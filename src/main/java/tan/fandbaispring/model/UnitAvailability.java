@@ -13,7 +13,7 @@ public class UnitAvailability {
     private Long id;
 
     private Long typeId; // FK tới UnitType
-    private Long variantId; // FK tới UnitVariant (nullable với loại không có biến thể)
+    // variantId không còn dùng trong mô hình đơn giản
     private LocalDate date;
 
     private Integer totalUnits;

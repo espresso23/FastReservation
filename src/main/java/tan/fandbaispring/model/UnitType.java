@@ -26,6 +26,8 @@ public class UnitType {
 
     private Long depositAmount; // Tiền đặt cọc (TABLE dùng)
 
+    private Integer totalUnits; // Tổng số phòng/bàn của loại (quản lý khả dụng dựa trên Booking)
+
     @ElementCollection
     private List<String> imageUrls; // Ảnh minh họa cố định của loại
 

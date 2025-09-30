@@ -38,4 +38,12 @@ export async function createType(input: Omit<UnitType, 'id'>) {
   return res.data as UnitType
 }
 
+export async function uploadImage(file: File, folder: string = 'types') {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('folder', folder)
+  const res = await api.post('/partner/upload', form, { headers: { 'Content-Type': 'multipart/form-data' } })
+  return res.data as { url: string }
+}
+
 

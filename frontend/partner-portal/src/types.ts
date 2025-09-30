@@ -34,6 +34,7 @@ export interface UnitType {
   hasBalcony?: boolean
   basePrice?: number
   depositAmount?: number
+  totalUnits?: number
   imageUrls?: string[]
   active?: boolean
 }

@@ -23,9 +23,15 @@ public class AiService {
     @Value("${python.ai.service.url}")
     private String pythonAiServiceUrl;
 
-    // RestTemplate thường được khuyến nghị tạo Bean hoặc dùng WebClient,
-    // nhưng dùng instance này là đủ cho Hackathon
-    private final RestTemplate restTemplate = new RestTemplate();
+    // RestTemplate với timeout để tránh chờ quá lâu nếu Python service treo
+    private final RestTemplate restTemplate;
+
+    public AiService() {
+        org.springframework.http.client.SimpleClientHttpRequestFactory f = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        f.setConnectTimeout(3000); // 3s
+        f.setReadTimeout(3000);    // 3s
+        this.restTemplate = new RestTemplate(f);
+    }
 
     /**
      * Gọi Python API để sinh câu hỏi Quiz có điều kiện.
@@ -98,15 +104,20 @@ public class AiService {
         SearchRequestDTO request = new SearchRequestDTO();
         request.setParams(params);
 
-        // Sử dụng exchange để xử lý List<Object> trả về
-        ResponseEntity<List<SearchResultDTO>> response = restTemplate.exchange(
-                url,
-                HttpMethod.POST,
-                new org.springframework.http.HttpEntity<>(request),
-                new ParameterizedTypeReference<List<SearchResultDTO>>() {}
-        );
+        try {
+            // Sử dụng exchange để xử lý List<Object> trả về
+            ResponseEntity<List<SearchResultDTO>> response = restTemplate.exchange(
+                    url,
+                    HttpMethod.POST,
+                    new org.springframework.http.HttpEntity<>(request),
+                    new ParameterizedTypeReference<List<SearchResultDTO>>() {}
+            );
 
-        return response.getBody() != null ? response.getBody() : Collections.emptyList();
+            return response.getBody() != null ? response.getBody() : Collections.emptyList();
+        } catch (Exception ex) {
+            // Timeout hoặc lỗi mạng → trả rỗng để controller fallback sang tìm kiếm nội bộ
+            return Collections.emptyList();
+        }
     }
 
     /**
@@ -125,7 +136,7 @@ public class AiService {
             } catch (Exception e) {
                 attempts++;
                 if (attempts >= 3) {
-                    System.err.println("LỖI: Không thể cập nhật Vector Store cho ID " + establishmentId + 
+                    System.err.println("LỖI: Không thể cập nhật Vector Store cho ID " + establishmentId +
                             ". Lần thử: " + attempts + ", lỗi: " + e.getMessage());
                     return;
                 }
