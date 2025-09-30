@@ -110,8 +110,8 @@ public class PartnerController {
             newEstablishment.setName(req.getName());
             newEstablishment.setType(tan.fandbaispring.model.EstablishmentType.valueOf(req.getType().toUpperCase()));
             newEstablishment.setCity(req.getCity());
-            newEstablishment.setPriceRangeVnd(req.getPriceRangeVnd());
-            newEstablishment.setStarRating(req.getStarRating());
+            newEstablishment.setAddress(req.getAddress());
+            // Bỏ nhập khoảng giá và số sao khi tạo. Nếu FE vẫn gửi thì cũng bỏ qua.
             newEstablishment.setDescriptionLong(req.getDescriptionLong());
             newEstablishment.setAmenitiesList(req.getAmenitiesList());
 
@@ -124,6 +124,8 @@ public class PartnerController {
 
             // Đảm bảo commit DB trước khi gọi AI để Python thấy được dữ liệu
             Establishment saved = establishmentRepo.saveAndFlush(newEstablishment);
+            // Log để xác nhận amenities được lưu
+            System.out.println("Saved amenities: " + saved.getAmenitiesList());
 
             // 4. Kích hoạt cập nhật Vector Store SAU KHI COMMIT
             aiService.indexEstablishmentAfterCommit(saved.getId());
@@ -273,5 +275,14 @@ public class PartnerController {
 
         List<Establishment> establishments = establishmentRepo.findByOwnerId(ownerId);
         return ResponseEntity.ok(establishments);
+    }
+
+    // --- API 6: Xem chi tiết 1 cơ sở theo ID ---
+    @GetMapping("/establishment/{id}")
+    public ResponseEntity<?> getEstablishmentById(@PathVariable String id) {
+        return establishmentRepo.findById(id)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(Map.of("message", "Không tìm thấy cơ sở.")));
     }
 }

@@ -19,6 +19,7 @@ public class Establishment {
     private EstablishmentType type; // HOTEL hoặc RESTAURANT
 
     private String city;
+    private String address;
     private Long priceRangeVnd; // Giá trung bình hoặc giá khởi điểm
     private int starRating;
 
@@ -26,7 +27,9 @@ public class Establishment {
     @Column(columnDefinition = "TEXT")
     private String descriptionLong; // Mô tả chi tiết (Nguồn dữ liệu chính cho RAG)
 
-    @ElementCollection
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "establishment_amenities_list", joinColumns = @JoinColumn(name = "establishment_id"))
+    @Column(name = "amenities_list")
     private List<String> amenitiesList; // Danh sách tiện ích
 
     // --- Tính năng Hình ảnh (Cloudinary) ---

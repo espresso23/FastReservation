@@ -10,6 +10,7 @@ public class EstablishmentCreationRequest {
     private String name;
     private String type; // HOTEL hoặc RESTAURANT
     private String city;
+    private String address;
     private Long priceRangeVnd;
     private int starRating;
     private String descriptionLong;

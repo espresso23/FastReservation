@@ -23,7 +23,8 @@ if not os.getenv("GOOGLE_API_KEY"):
     if alt_key:
         os.environ["GOOGLE_API_KEY"] = alt_key
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -143,6 +144,10 @@ def fetch_single_establishment(establishment_id: str) -> Optional[Dict[str, Any]
             password=DB_CONFIG['password']
         )
         cur = conn.cursor()
+        try:
+            cur.execute("SET search_path TO public;")
+        except Exception:
+            pass
         
         cur.execute("""
             SELECT 
@@ -155,12 +160,33 @@ def fetch_single_establishment(establishment_id: str) -> Optional[Dict[str, Any]
         
         col_names = [desc[0] for desc in cur.description]
         row = cur.fetchone()
+        if not row:
+            logging.info("DB query returned 0 rows for id=%s", establishment_id)
         
         if row:
             data = dict(zip(col_names, row))
-            # Trường amenities_list nằm ở bảng phụ; đặt mặc định rỗng để tránh lỗi
-            if 'amenities_list' not in data:
-                data['amenities_list'] = ''
+            # Lấy amenities từ bảng phụ (ElementCollection của JPA)
+            amenities_raw: List[Any] = []
+            try:
+                # Thử tên bảng/column phổ biến do JPA sinh ra
+                cur.execute("""
+                    SELECT amenities_list FROM establishment_amenities_list WHERE establishment_id = %s
+                """, (establishment_id,))
+                rows = cur.fetchall()
+                amenities_raw = [r[0] for r in rows]
+            except Exception:
+                try:
+                    cur.execute("""
+                        SELECT element FROM establishment_amenities_list WHERE establishment_id = %s
+                    """, (establishment_id,))
+                    rows = cur.fetchall()
+                    amenities_raw = [r[0] for r in rows]
+                except Exception:
+                    logger.info("Amenities table not found with default names; skip amenities fetch")
+
+            # Lọc None/empty và ép về string để tránh lỗi join
+            amenities: List[str] = [str(x).strip() for x in amenities_raw if x is not None and str(x).strip()]
+            data['amenities_list'] = ", ".join(amenities) if amenities else ''
             
         return data
     except Exception as error:
@@ -301,6 +327,7 @@ async def rag_search(req: SearchRequest):
 @app.post("/add-establishment")
 async def add_establishment(req: AddEstablishmentRequest):
     # 0. Kiểm tra readiness của Vector Store
+    logger.info("/add-establishment called with id=%s", req.id)
     if vectorstore is None or embeddings is None:
         raise HTTPException(status_code=503, detail="Vector Store chưa được khởi tạo (thiếu embeddings/API key).")
 
@@ -319,6 +346,15 @@ async def add_establishment(req: AddEstablishmentRequest):
         f"Tiện ích: {amenities}. "
         f"Mô tả chi tiết: {new_data['description_long']}"
     )
+    long_desc = (new_data.get('description_long') or '')
+    logger.info("Fetched establishment name=%s, city=%s, len(description)=%s", new_data.get('name'), city, len(long_desc))
+    logger.info("Description snippet: %s", long_desc[:300].replace("\n", " "))
+    logger.info("Source_text snippet: %s", source_text[:300].replace("\n", " "))
+    try:
+        before = vectorstore._collection.count()  # type: ignore
+    except Exception:
+        before = None
+    logger.info("Chroma count before add: %s", before)
 
     # 3. Tạo Embeddings và thêm vào Vector Store
     try:
@@ -326,9 +362,70 @@ async def add_establishment(req: AddEstablishmentRequest):
             texts=[source_text],
             metadatas=[new_data]
         )
-        return {"status": "success", "message": f"Đã thêm {new_data['name']} vào Vector Store (Gemini)."}
+        try:
+            after = vectorstore._collection.count()  # type: ignore
+            detail_after = vectorstore._collection.get(  # type: ignore
+                where={"id": req.id},
+                include=["documents","metadatas"]
+            )
+            logger.info("Chroma detail after add: %s", detail_after)
+        except Exception:
+            after = None
+        logger.info("Added to Chroma: id=%s, count after=%s", req.id, after)
+        return {"status": "success", "message": f"Đã thêm {new_data['name']} vào Vector Store (Gemini).", "chroma_count": after, "chroma_detail": detail_after }
     except Exception as e:
+        logger.error("Error adding to ChromaDB: %s", getattr(e, 'message', str(e)))
         raise HTTPException(status_code=500, detail=f"Lỗi khi thêm vào ChromaDB: {e}")
+
+# DEBUG: Truy vấn document đã lưu trong Chroma theo establishment id
+@app.get("/debug/vector/{establishment_id}")
+async def debug_vector(establishment_id: str):
+    if vectorstore is None:
+        raise HTTPException(status_code=503, detail="Vector Store chưa sẵn sàng")
+    try:
+        data = vectorstore._collection.get(  # type: ignore
+            where={"id": establishment_id},
+            include=["documents","metadatas"]
+        )
+        # Chuẩn hoá phản hồi gọn, chỉ trả về phần đầu document để xem nhanh
+        docs = data.get("documents") or []
+        metas = data.get("metadatas") or []
+        preview = [ (d[:400] if isinstance(d,str) else d) for d in docs ]
+        return {"found": len(docs), "documents_preview": preview, "metadatas": metas}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Debug read error: {e}")
+
+# DEBUG: Kiểm tra trực tiếp bản ghi trong Postgres theo id
+@app.get("/debug/db/{establishment_id}")
+async def debug_db(establishment_id: str):
+    try:
+        conn = psycopg2.connect(
+            host=DB_CONFIG['host'],
+            port=DB_CONFIG['port'],
+            database=DB_CONFIG['database'],
+            user=DB_CONFIG['user'],
+            password=DB_CONFIG['password']
+        )
+        cur = conn.cursor()
+        try:
+            cur.execute("SET search_path TO public;")
+        except Exception:
+            pass
+        cur.execute("SELECT COUNT(*) FROM establishment WHERE id = %s", (establishment_id,))
+        cnt = cur.fetchone()[0]
+        sample = None
+        if cnt:
+            cur.execute("SELECT id, name, city FROM establishment WHERE id = %s", (establishment_id,))
+            r = cur.fetchone()
+            sample = {"id": r[0], "name": r[1], "city": r[2]}
+        return {"db_host": DB_CONFIG['host'], "db": DB_CONFIG['database'], "row_count": cnt, "sample": sample}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Debug DB error: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 

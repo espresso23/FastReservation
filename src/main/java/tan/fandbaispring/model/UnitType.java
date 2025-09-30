@@ -22,7 +22,9 @@ public class UnitType {
 
     private Boolean hasBalcony; // dành cho ROOM; TABLE có thể bỏ qua
 
-    private Long basePrice; // Giá cơ bản
+    private Long basePrice; // Giá cơ bản (ROOM dùng)
+
+    private Long depositAmount; // Tiền đặt cọc (TABLE dùng)
 
     @ElementCollection
     private List<String> imageUrls; // Ảnh minh họa cố định của loại
