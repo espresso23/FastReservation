@@ -4,7 +4,7 @@ import { confirmBooking, processBooking } from '../api/user'
 import type { QuizResponse, Suggestion } from '../api/user'
 
 export default function UserBookingPage() {
-  const [prompt, setPrompt] = useState('Tôi muốn đi Đà Nẵng ngày 2025-10-10 2 đêm, phòng có ban công')
+  const [prompt, setPrompt] = useState('Tôi muốn đi Đà Nẵng ngày 2025-10-10 2 đêm, có phòng gym')
   const [currentParams, setCurrentParams] = useState<Record<string, any>>({})
   const [quiz, setQuiz] = useState<QuizResponse | null>(null)
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null)
@@ -22,6 +22,8 @@ export default function UserBookingPage() {
 
   // Fallback tag choices nếu BE không gửi options
   const defaultOptions: Record<string, string[]> = {
+    establishment_type: ['HOTEL','RESTAURANT'],
+    travel_companion: ['single','couple','family','friends'],
     style_vibe: ['romantic','quiet','lively','luxury','nature'],
     amenities_priority: ['Hồ bơi','Spa','Bãi đậu xe','Gym','Buffet sáng','Gần biển'],
     duration: ['1','2','3','4','5','6','7'],
@@ -33,7 +35,72 @@ export default function UserBookingPage() {
     setLoading(true); setMsg(null)
     try {
       const pmt = (override?.prompt ?? prompt) || ''
-      const paramsToSend = override?.params ?? currentParams
+      let paramsToSend = override?.params ?? currentParams
+      // Client-side quick inference to avoid re-asking basic facts
+      const strip = (s:string) => (
+        s
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '') // remove accents
+          .replace(/đ/g, 'd').replace(/Đ/g, 'd')
+          .replace(/[^a-zA-Z0-9\s]/g, ' ') // punctuation to spaces
+          .replace(/\s+/g, ' ') // collapse
+          .trim()
+          .toLowerCase()
+      )
+      const inferCity = (text:string): string | null => {
+        const t = strip(text)
+        const pairs: [string, string][] = [
+          ['da nang','Đà Nẵng'], ['danang','Đà Nẵng'], ['da-nang','Đà Nẵng'], ['da_nang','Đà Nẵng'], ['dn','Đà Nẵng'],
+          ['ha noi','Hà Nội'], ['hanoi','Hà Nội'],
+          ['ho chi minh','Hồ Chí Minh'], ['tphcm','Hồ Chí Minh'], ['hcm','Hồ Chí Minh'], ['sai gon','Hồ Chí Minh'], ['saigon','Hồ Chí Minh'],
+          ['nha trang','Nha Trang'], ['nhatrang','Nha Trang'],
+          ['da lat','Đà Lạt'], ['dalat','Đà Lạt']
+        ]
+        for (const [alias, disp] of pairs.sort((a,b)=>b[0].length-a[0].length)) {
+          if (t.includes(alias)) return disp
+        }
+        return null
+      }
+      const inferType = (text:string): 'HOTEL'|'RESTAURANT'|null => {
+        const lc = strip(text)
+        if (lc.includes('khach san') || lc.includes('hotel')) return 'HOTEL'
+        if (lc.includes('nha hang') || lc.includes('restaurant')) return 'RESTAURANT'
+        return null
+      }
+      const parseFromPrompt = (text: string): Record<string, any> => {
+        const out: Record<string, any> = {}
+        const city = inferCity(text); if (city) out.city = city
+        // YYYY-MM-DD
+        const dateM = text.match(/(20\d{2}-\d{2}-\d{2})/)
+        if (dateM) out.check_in_date = dateM[1]
+        // duration: "2 đêm" or "2 ngay"
+        const s = strip(text)
+        const durM = s.match(/(\d+)\s*(dem|dems|ngay)/)
+        if (durM) out.duration = Number(durM[1])
+        // amenities and balcony
+        const amens: string[] = []
+        if (s.includes('gym')) amens.push('Gym')
+        if (s.includes('ho boi') || s.includes('hoboi') || s.includes('pool')) amens.push('Hồ bơi')
+        if (s.includes('spa')) amens.push('Spa')
+        if (s.includes('bai do xe') || s.includes('giu xe') || s.includes('parking')) amens.push('Bãi đậu xe')
+        if (s.includes('gan bien') || s.includes('ganbien') || s.includes('beach')) amens.push('Gần biển')
+        if (amens.length) out.amenities_priority = amens.join(', ')
+        if (s.includes('ban cong')) out.has_balcony = 'yes'
+        const t = inferType(text); if (t) out.establishment_type = t
+        return out
+      }
+      // Parse immediately at the very first prompt
+      const parsed = parseFromPrompt(pmt)
+      if (Object.keys(parsed).length) {
+        paramsToSend = { ...paramsToSend, ...parsed }
+        setCurrentParams(prev => ({ ...prev, ...parsed }))
+      }
+      // Fill city/type if missing
+      const localCity = (!paramsToSend.city) ? inferCity(pmt) : null
+      const localType = (!paramsToSend.establishment_type) ? inferType(pmt) : null
+      if (localCity || localType) paramsToSend = { ...paramsToSend }
+      if (localCity) paramsToSend.city = localCity
+      if (localType) paramsToSend.establishment_type = localType
       // Ghi message user
       if (pmt.trim()) setMessages(prev => [...prev, { role: 'user', text: pmt.trim() }])
       const res = await processBooking({ userPrompt: pmt, currentParams: paramsToSend })
@@ -46,9 +113,16 @@ export default function UserBookingPage() {
         ])
       } else {
         setQuiz(res)
-        // Đồng bộ các tham số đã suy luận được từ server
-        if (res.final_params) {
-          setCurrentParams(prev => ({ ...prev, ...res.final_params }))
+        // Đồng bộ tham số: ưu tiên paramsToSend (đã infer localCity/localType) rồi merge final_params từ server
+        const mergedParams = { ...paramsToSend, ...(res.final_params || {}) }
+        setCurrentParams(mergedParams)
+        // Auto-skip if server still asks for a field we already inferred locally
+        if (!res.quiz_completed && res.key_to_collect) {
+          const k = res.key_to_collect
+          if ((k === 'city' && mergedParams.city) || (k === 'establishment_type' && mergedParams.establishment_type)) {
+            setTimeout(() => { send({ params: mergedParams, prompt: '', auto: true }) }, 0)
+            return
+          }
         }
         setSuggestions(null)
         setSelectedOpt('')
@@ -87,6 +161,7 @@ export default function UserBookingPage() {
 
   const keyLabel = (k?: string) => {
     switch (k) {
+      case 'establishment_type': return 'Loại cơ sở';
       case 'city': return 'Thành phố';
       case 'check_in_date': return 'Ngày nhận';
       case 'duration': return 'Số đêm';
@@ -100,7 +175,26 @@ export default function UserBookingPage() {
     }
   }
 
+  const optionLabel = (key: string, v: string) => {
+    if (key === 'establishment_type') {
+      if (v.toUpperCase() === 'HOTEL') return 'Khách sạn'
+      if (v.toUpperCase() === 'RESTAURANT') return 'Nhà hàng'
+    }
+    if (key === 'travel_companion') {
+      const m: Record<string,string> = { single: 'Một mình', couple: 'Cặp đôi', family: 'Gia đình', friends: 'Bạn bè' }
+      return m[v.toLowerCase()] || v
+    }
+    if (key === 'has_balcony') {
+      if ((v || '').toLowerCase() === 'yes') return 'Có'
+      if ((v || '').toLowerCase() === 'no') return 'Không'
+    }
+    return v
+  }
+
   const humanizeValue = (k: string, v: string) => {
+    if (k === 'establishment_type') {
+      return optionLabel(k, v)
+    }
     if (k === 'num_guests') {
       const vv = (v || '').toLowerCase()
       if (vv === 'single') return '1 người'
@@ -219,7 +313,7 @@ export default function UserBookingPage() {
                 {!quiz.image_options && quiz.key_to_collect !== 'amenities_priority' && (
                   <div className="flex flex-wrap gap-2">
                     {(quiz.options && quiz.options.length>0 ? quiz.options : (defaultOptions[quiz.key_to_collect as string]||[])).map((o,i)=> (
-                      <button key={i} type="button" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }} className={`px-2 py-1 border rounded-full text-sm ${selectedOpt===o?'bg-slate-900 text-white border-slate-900':'bg-white'}`}>{o}</button>
+                      <button key={i} type="button" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }} className={`px-2 py-1 border rounded-full text-sm ${selectedOpt===o?'bg-slate-900 text-white border-slate-900':'bg-white'}`}>{optionLabel(quiz.key_to_collect as string, o)}</button>
                     ))}
                   </div>
                 )}

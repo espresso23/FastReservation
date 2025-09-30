@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { createType, listMyEstablishments, listTypes, uploadImage } from '../api/partner'
+import { createType, listMyEstablishments, listTypes, uploadImage, updateType, deleteType } from '../api/partner'
 import type { Establishment, UnitType } from '../types'
 import { useAuth } from '../auth/AuthContext'
 import { unitCodePresets } from '../constants/unitPresets'
@@ -12,6 +12,7 @@ export default function TypesPage() {
   const [presetCode, setPresetCode] = useState<string>('')
   const [requireDeposit, setRequireDeposit] = useState<boolean>(false)
   const [expandedId, setExpandedId] = useState<number | null>(null)
+	const [edit, setEdit] = useState<Record<number, Partial<UnitType>>>({})
 
   const [form, setForm] = useState<Omit<UnitType, 'id'>>({
     establishmentId: '',
@@ -39,13 +40,13 @@ export default function TypesPage() {
 
   useEffect(() => {
     if (!selectedEst) return
-    listTypes(selectedEst).then(setTypes)
+		listTypes(selectedEst).then(setTypes)
     setForm((f) => ({ ...f, establishmentId: selectedEst }))
   }, [selectedEst])
 
   const currentEst = useMemo(() => establishments.find(e => e.id === selectedEst), [establishments, selectedEst])
 
-  const onCreate = async (e: React.FormEvent) => {
+	const onCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     const payload: any = { ...form }
     if (form.category === 'ROOM') {
@@ -60,6 +61,40 @@ export default function TypesPage() {
     setForm({ ...form, code: '', name: '', basePrice: 0 })
   }
 
+	function ensureEditRow(t: UnitType) {
+		if (!t.id) return
+		setEdit(prev => {
+			if (prev[t.id!]) return prev
+			return { ...prev, [t.id!]: { ...t } }
+		})
+	}
+
+	async function onSaveRow(t: UnitType) {
+		if (!t.id) return
+		const payload = edit[t.id!] || {}
+		const updated = await updateType(t.id!, payload)
+		setTypes(list => list.map(x => x.id === t.id ? updated : x))
+		setEdit(prev => ({ ...prev, [t.id!]: { ...updated } }))
+	}
+
+	function setField(tid: number, key: keyof UnitType, value: any) {
+		setEdit(prev => ({ ...prev, [tid]: { ...(prev[tid]||{}), [key]: value } }))
+	}
+
+	async function addImage(t: UnitType, file: File) {
+		if (!t.id) return
+		const { url } = await uploadImage(file, 'unit_type')
+		const imgs = [ ...((edit[t.id!]?.imageUrls) || t.imageUrls || []), url ]
+		setField(t.id!, 'imageUrls', imgs)
+	}
+
+	function removeImage(t: UnitType, idx: number) {
+		if (!t.id) return
+		const arr = [ ...((edit[t.id!]?.imageUrls) || t.imageUrls || []) ]
+		arr.splice(idx, 1)
+		setField(t.id!, 'imageUrls', arr)
+	}
+
   return (
     <div>
       <h1 className="text-xl font-semibold mb-4">Loại phòng/bàn</h1>
@@ -68,7 +103,7 @@ export default function TypesPage() {
         <div className="text-sm text-slate-600">Chọn cơ sở</div>
         <select className="border rounded px-3 py-2" value={selectedEst} onChange={(e)=>setSelectedEst(e.target.value)}>
           <option value="">-- Chọn --</option>
-          {establishments.map((e)=>(<option key={e.id} value={e.id}>{e.name}</option>))}
+          {establishments.map((e)=>(<option key={e.id} value={e.id}>{e.name}{e.address?` — ${e.address}`:''}</option>))}
         </select>
         {currentEst && <div className="text-sm text-slate-500">{currentEst.city}</div>}
       </div>
@@ -196,12 +231,12 @@ export default function TypesPage() {
         <div className="md:col-span-2 rounded-lg border border-slate-200 bg-white p-4 shadow-sm w-full">
           <div className="font-medium mb-3">Các loại đã tạo</div>
           <div className="space-y-2 max-h-[60vh] overflow-auto pr-2">
-            {types.map((t)=>(
+				{types.map((t)=>(
               <div key={t.id} className="border rounded-lg p-3 shadow-sm">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="font-medium">{t.name} ({t.code})</div>
-                    <div className="text-sm text-slate-600">{t.category} • Sức chứa {t.capacity} • Cơ sở: {t.establishmentId}</div>
+								<div className="font-medium">{t.name} ({t.code})</div>
+                    <div className="text-sm text-slate-600">{t.category} • Sức chứa {t.capacity} • Cơ sở: {(establishments.find(e=>e.id===t.establishmentId)?.name) || t.establishmentId}{establishments.find(e=>e.id===t.establishmentId)?.address?` — ${establishments.find(e=>e.id===t.establishmentId)?.address}`:''}</div>
                   </div>
                   <div className="flex items-center gap-3 text-sm">
                     {t.category === 'ROOM' ? (
@@ -209,34 +244,76 @@ export default function TypesPage() {
                     ) : (
                       <span>Đặt cọc: {t.depositAmount ? t.depositAmount.toLocaleString() + ' đ' : 'Không yêu cầu'}</span>
                     )}
-                    <button className="px-2 py-1 border rounded" onClick={()=>setExpandedId(expandedId===t.id?null:t.id)}>
+								<button className="px-2 py-1 border rounded" onClick={()=>{ setExpandedId(expandedId===t.id?null:t.id); ensureEditRow(t) }}>
                       {expandedId===t.id ? 'Ẩn chi tiết' : 'Xem chi tiết'}
                     </button>
+                    <button className="px-2 py-1 border rounded text-red-600" onClick={async()=>{
+                      if (!confirm('Xóa loại này?')) return
+                      await deleteType(t.id!)
+                      setTypes(list=>list.filter(x=>x.id!==t.id))
+                    }}>Xóa</button>
                   </div>
                 </div>
                 {expandedId===t.id && (
-                  <div className="mt-3 text-sm text-slate-700 grid grid-cols-2 gap-3">
-                    <div>Mã: {t.code}</div>
-                    <div>Danh mục: {t.category}</div>
-                    <div>Sức chứa: {t.capacity}</div>
-                    <div>Ban công: {t.hasBalcony ? 'Có' : 'Không'}</div>
-                    {t.category==='ROOM' && <div>Giá cơ bản: {t.basePrice?.toLocaleString()} đ</div>}
-                    {t.category==='TABLE' && <div>Tiền cọc: {t.depositAmount ? t.depositAmount.toLocaleString() + ' đ' : 'Không'}</div>}
-                    <div className="col-span-2">
-                      {(t.imageUrls && t.imageUrls.length>0) ? (
-                        <div className="grid grid-cols-6 gap-2">
-                          {t.imageUrls.map((u,idx)=> (
-                            <img key={idx} src={u} className="w-full h-20 object-cover rounded" />
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="text-slate-500">Chưa có hình ảnh</div>
-                      )}
-                    </div>
-                    <div className="col-span-2">
-                      <a href={`/variants?typeId=${t.id}`} className="text-blue-600">Quản lý biến thể cho loại này</a>
-                    </div>
-                  </div>
+							<div className="mt-3 text-sm text-slate-700 grid grid-cols-2 gap-3">
+								<div>
+									<label className="block text-xs text-slate-600 mb-1">Mã</label>
+									<input className="w-full border rounded px-2 py-1" value={(edit[t.id!]?.code ?? t.code) || ''}
+										onChange={(e)=>setField(t.id!, 'code', e.target.value)} />
+								</div>
+								<div>
+									<label className="block text-xs text-slate-600 mb-1">Tên loại</label>
+									<input className="w-full border rounded px-2 py-1" value={(edit[t.id!]?.name ?? t.name) || ''}
+										onChange={(e)=>setField(t.id!, 'name', e.target.value)} />
+								</div>
+								<div>
+									<label className="block text-xs text-slate-600 mb-1">Sức chứa</label>
+									<input type="number" className="w-full border rounded px-2 py-1" value={(edit[t.id!]?.capacity ?? t.capacity) as any}
+										onChange={(e)=>setField(t.id!, 'capacity', Number(e.target.value||0))} />
+								</div>
+								<div className="flex items-end gap-2">
+									<label className="text-sm flex items-center gap-2"><input type="checkbox" checked={!!(edit[t.id!]?.hasBalcony ?? t.hasBalcony)} onChange={(e)=>setField(t.id!, 'hasBalcony', e.target.checked)} /> Ban công</label>
+									<label className="text-sm flex items-center gap-2 ml-4"><input type="checkbox" checked={!!(edit[t.id!]?.active ?? t.active)} onChange={(e)=>setField(t.id!, 'active', e.target.checked)} /> Active</label>
+								</div>
+								<div>
+									<label className="block text-xs text-slate-600 mb-1">Tổng số phòng/bàn</label>
+									<input type="number" className="w-full border rounded px-2 py-1" value={(edit[t.id!]?.totalUnits ?? t.totalUnits) as any}
+										onChange={(e)=>setField(t.id!, 'totalUnits', Number(e.target.value||0))} />
+								</div>
+								{t.category==='ROOM' && (
+									<div>
+										<label className="block text-xs text-slate-600 mb-1">Giá cơ bản (VND)</label>
+										<input type="number" className="w-full border rounded px-2 py-1" value={(edit[t.id!]?.basePrice ?? t.basePrice) as any}
+											onChange={(e)=>setField(t.id!, 'basePrice', Number(e.target.value||0))} />
+									</div>
+								)}
+								{t.category==='TABLE' && (
+									<div>
+										<label className="block text-xs text-slate-600 mb-1">Tiền cọc (VND)</label>
+										<input type="number" className="w-full border rounded px-2 py-1" value={(edit[t.id!]?.depositAmount ?? t.depositAmount) as any}
+											onChange={(e)=>setField(t.id!, 'depositAmount', Number(e.target.value||0))} />
+									</div>
+								)}
+								<div className="col-span-2">
+									<label className="block text-xs text-slate-600 mb-1">Hình ảnh</label>
+									<div className="flex items-center gap-3 mb-2">
+										<input type="file" accept="image/*" onChange={async(e)=>{ const f=e.target.files?.[0]; if(!f) return; await addImage(t, f); }} />
+										<button className="px-3 py-1 border rounded" onClick={async()=>{ await onSaveRow(t) }}>Lưu thay đổi</button>
+									</div>
+									{(((edit[t.id!]?.imageUrls) || t.imageUrls || []).length>0) ? (
+										<div className="grid grid-cols-6 gap-2">
+											{((edit[t.id!]?.imageUrls) || t.imageUrls || []).map((u,idx)=> (
+												<div key={idx} className="relative group">
+													<img src={u} className="w-full h-20 object-cover rounded" />
+													<button type="button" className="absolute top-1 right-1 text-xs px-1 py-0.5 rounded bg-white/90 border hidden group-hover:block" onClick={()=>removeImage(t, idx)}>x</button>
+												</div>
+											))}
+										</div>
+									) : (
+										<div className="text-slate-500">Chưa có hình ảnh</div>
+									)}
+								</div>
+							</div>
                 )}
               </div>
             ))}

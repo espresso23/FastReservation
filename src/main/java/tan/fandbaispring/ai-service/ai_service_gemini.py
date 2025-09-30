@@ -104,11 +104,13 @@ class QuizResponseModel(BaseModel):
 
 # Danh sách tham số cốt lõi (dùng cho cả fallback)
 PARAM_ORDER = [
+    "establishment_type",  # HOTEL | RESTAURANT (suy luận từ prompt nếu có)
     "city", "check_in_date", "travel_companion", "duration",
     "max_price", "amenities_priority"
 ]
 
 FALLBACK_QUESTIONS = {
+    "establishment_type": "Bạn muốn tìm Khách sạn (HOTEL) hay Nhà hàng (RESTAURANT)?",
     "city": "Bạn muốn đi ở thành phố nào?",
     "check_in_date": "Bạn dự định ngày bắt đầu chuyến đi là khi nào? (YYYY-MM-DD)",
     "travel_companion": "Bạn sẽ đi cùng ai? (single, couple, family, friends hoặc nhập số người)",
@@ -119,6 +121,7 @@ FALLBACK_QUESTIONS = {
 
 # Gợi ý lựa chọn cho FE (multiple choice)
 FALLBACK_OPTIONS = {
+    "establishment_type": ["HOTEL","RESTAURANT"],
     "travel_companion": ["single", "couple", "family", "friends"],
     "amenities_priority": ["Hồ bơi", "Spa", "Bãi đậu xe", "Gym", "Buffet sáng", "Gần biển"],
     "duration": ["1","2","3","4","5","6","7"],
@@ -180,11 +183,69 @@ def detect_brand_name(mixed_text: str, city: Optional[str]) -> Optional[str]:
         return None
 
 
+# --- City inference helpers ---
+def strip_accents(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    return ''.join(c for c in unicodedata.normalize('NFD', str(s).strip()) if unicodedata.category(c) != 'Mn').lower()
+
+# canonical -> display
+CITY_DISPLAY = {
+    "danang": "Đà Nẵng",
+    "hanoi": "Hà Nội",
+    "hochiminh": "Hồ Chí Minh",
+    "nhatrang": "Nha Trang",
+    "dalat": "Đà Lạt",
+    "hue": "Huế",
+    "cantho": "Cần Thơ",
+}
+
+# aliases -> canonical
+CITY_ALIASES = {
+    "da nang": "danang",
+    "danang": "danang",
+    "dn": "danang",
+    "ha noi": "hanoi",
+    "hanoi": "hanoi",
+    "ho chi minh": "hochiminh",
+    "tp ho chi minh": "hochiminh",
+    "tphcm": "hochiminh",
+    "hcm": "hochiminh",
+    "sai gon": "hochiminh",
+    "saigon": "hochiminh",
+    "nha trang": "nhatrang",
+    "nhatrang": "nhatrang",
+    "da lat": "dalat",
+    "dalat": "dalat",
+}
+
+def infer_city_from_text(text: str) -> Optional[str]:
+    t = strip_accents(text)
+    # tìm alias dài trước để tránh va chạm
+    for alias in sorted(CITY_ALIASES.keys(), key=len, reverse=True):
+        if alias in t:
+            canonical = CITY_ALIASES[alias]
+            return CITY_DISPLAY.get(canonical, canonical)
+    return None
+
+
 def normalize_params(final_params: Dict[str, Any], user_prompt: str) -> Dict[str, Any]:
     """Chuẩn hóa: gộp style_vibe vào amenities_priority; tách brand name nếu phát hiện."""
     params = dict(final_params or {})
     city = params.get("city")
     mixed = f"{user_prompt} {params.get('amenities_priority','')} {params.get('style_vibe','')}"
+    # Suy luận loại cơ sở từ prompt nếu có
+    prompt_lc = (user_prompt or "").lower()
+    if not params.get("establishment_type"):
+        if any(k in prompt_lc for k in ["khach san","khách sạn","hotel"]):
+            params["establishment_type"] = "HOTEL"
+        elif any(k in prompt_lc for k in ["nha hang","nhà hàng","restaurant"]):
+            params["establishment_type"] = "RESTAURANT"
+    # Suy luận city nếu thiếu (accent-insensitive)
+    if not params.get("city"):
+        guessed = infer_city_from_text(user_prompt or "")
+        if guessed:
+            params["city"] = guessed
     brand = detect_brand_name(mixed, city)
     if brand:
         params["brand_name"] = brand
@@ -315,6 +376,17 @@ async def generate_quiz(req: QuizRequest):
     # Fallback nếu LLM chưa sẵn sàng: logic quyết định tối thiểu, KHÔNG trả 503
     if not llm:
         final_params = dict(req.current_params or {})
+        # Suy luận city và loại cơ sở từ prompt nếu thiếu
+        if not final_params.get("city"):
+            guessed_city = infer_city_from_text(req.user_prompt or "")
+            if guessed_city:
+                final_params["city"] = guessed_city
+        if not final_params.get("establishment_type"):
+            plc = (req.user_prompt or "").lower()
+            if any(k in plc for k in ["khach san","khách sạn","hotel"]):
+                final_params["establishment_type"] = "HOTEL"
+            elif any(k in plc for k in ["nha hang","nhà hàng","restaurant"]):
+                final_params["establishment_type"] = "RESTAURANT"
         # Heuristic nhỏ: nếu prompt chứa từ khóa, suy luận nhẹ
         prompt_lc = (req.user_prompt or "").lower()
         if "lãng mạn" in prompt_lc and not final_params.get("style_vibe"):
@@ -367,34 +439,63 @@ async def generate_quiz(req: QuizRequest):
     chain = prompt | llm | parser
 
     try:
+        # Tiền xử lý: bổ sung city/type suy luận trước khi gửi vào LLM để tránh hỏi lại
+        pre_params: Dict[str, Any] = dict(req.current_params or {})
+        if not pre_params.get("city"):
+            guessed_city = infer_city_from_text(req.user_prompt or "")
+            if guessed_city:
+                pre_params["city"] = guessed_city
+        if not pre_params.get("establishment_type"):
+            plc = (req.user_prompt or "").lower()
+            if any(k in plc for k in ["khach san","khách sạn","hotel"]):
+                pre_params["establishment_type"] = "HOTEL"
+            elif any(k in plc for k in ["nha hang","nhà hàng","restaurant"]):
+                pre_params["establishment_type"] = "RESTAURANT"
+
         result = chain.invoke({
             "param_order": ", ".join(PARAM_ORDER),
-            "current_params": json.dumps(req.current_params, ensure_ascii=False),
+            "current_params": json.dumps(pre_params, ensure_ascii=False),
             "user_prompt": req.user_prompt,
             "format_instructions": parser.get_format_instructions()
         })
 
         # Chuẩn hóa + bổ sung mặc định để tránh hỏi lặp hoặc bất hợp lý
-        normalized = normalize_params(result.get('final_params', {}), req.user_prompt)
+        # Gộp với pre_params để giữ các giá trị đã suy luận trước đó
+        merged_after_llm = { **pre_params, **(result.get('final_params', {}) or {}) }
+        normalized = normalize_params(merged_after_llm, req.user_prompt)
         normalized = apply_defaults(normalized)
         result['final_params'] = normalized
 
-        if not result.get('quiz_completed'):
-            for key in PARAM_ORDER:
-                if not result.get('final_params', {}).get(key):
-                    result['key_to_collect'] = key
-                    if not result.get('missing_quiz'):
-                        result['missing_quiz'] = FALLBACK_QUESTIONS.get(key)
-                    result['options'] = FALLBACK_OPTIONS.get(key)
-                    # TẮT image_options
-                    result['image_options'] = None
-                    break
+        # Tự quyết định thiếu gì dựa trên PARAM_ORDER (bỏ qua gợi ý của LLM như style_vibe)
+        missing_key = next((k for k in PARAM_ORDER if not result['final_params'].get(k)), None)
+        if missing_key:
+            result['quiz_completed'] = False
+            result['key_to_collect'] = missing_key
+            result['missing_quiz'] = FALLBACK_QUESTIONS.get(missing_key)
+            result['options'] = FALLBACK_OPTIONS.get(missing_key)
+            result['image_options'] = None
+        else:
+            result['quiz_completed'] = True
+            result['key_to_collect'] = None
+            result['missing_quiz'] = None
+            result['options'] = None
+            result['image_options'] = None
 
         return result
     except Exception as e:
         logging.error(f"LỖI GỌI LLM/Parser: {e}")
         # Cuối cùng vẫn có fallback để không chặn luồng FE
         final_params = dict(req.current_params or {})
+        if not final_params.get("city"):
+            guessed_city = infer_city_from_text(req.user_prompt or "")
+            if guessed_city:
+                final_params["city"] = guessed_city
+        if not final_params.get("establishment_type"):
+            plc = (req.user_prompt or "").lower()
+            if any(k in plc for k in ["khach san","khách sạn","hotel"]):
+                final_params["establishment_type"] = "HOTEL"
+            elif any(k in plc for k in ["nha hang","nhà hàng","restaurant"]):
+                final_params["establishment_type"] = "RESTAURANT"
         missing = next((k for k in PARAM_ORDER if not final_params.get(k)), None)
         if missing:
             # TẮT image_options khi fallback

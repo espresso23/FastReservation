@@ -41,7 +41,8 @@ public class PartnerController {
 
     // --- Hàm Hỗ trợ Upload Cloudinary ---
     private String performUpload(MultipartFile file, String folder) throws IOException {
-        Map uploadResult = cloudinary.uploader().upload(file.getBytes(),
+        @SuppressWarnings("unchecked")
+        Map<String, Object> uploadResult = (Map<String, Object>) cloudinary.uploader().upload(file.getBytes(),
                 ObjectUtils.asMap("folder", "fast_planner_" + folder));
         return uploadResult.get("url").toString();
     }
@@ -196,7 +197,52 @@ public class PartnerController {
 
     @GetMapping("/types/{establishmentId}")
     public ResponseEntity<?> listTypes(@PathVariable String establishmentId) {
-        return ResponseEntity.ok(unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishmentId));
+        List<UnitType> types = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishmentId);
+        // Trả kèm tên và địa chỉ cơ sở để FE hiển thị đẹp
+        Optional<Establishment> estOpt = establishmentRepo.findById(establishmentId);
+        Map<String, Object> meta;
+        if (estOpt.isPresent()) {
+            Establishment e = estOpt.get();
+            meta = new HashMap<>();
+            meta.put("establishmentName", e.getName());
+            meta.put("establishmentAddress", e.getAddress());
+        } else {
+            meta = new HashMap<>();
+        }
+        Map<String, Object> body = new HashMap<>();
+        body.put("items", types);
+        body.put("meta", meta);
+        return ResponseEntity.ok(body);
+    }
+
+    // Cập nhật UnitType
+    @PutMapping("/types/{typeId}")
+    public ResponseEntity<?> updateType(@PathVariable Long typeId, @RequestBody UnitType input) {
+        Optional<UnitType> opt = unitTypeRepo.findById(typeId);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message", "Không tìm thấy loại"));
+        UnitType t = opt.get();
+        // Cho phép cập nhật các field chính
+        t.setCategory(input.getCategory() != null ? input.getCategory() : t.getCategory());
+        t.setCode(input.getCode() != null ? input.getCode() : t.getCode());
+        t.setName(input.getName() != null ? input.getName() : t.getName());
+        t.setCapacity(input.getCapacity() != null ? input.getCapacity() : t.getCapacity());
+        t.setHasBalcony(input.getHasBalcony() != null ? input.getHasBalcony() : t.getHasBalcony());
+        t.setBasePrice(input.getBasePrice() != null ? input.getBasePrice() : t.getBasePrice());
+        t.setDepositAmount(input.getDepositAmount() != null ? input.getDepositAmount() : t.getDepositAmount());
+        t.setTotalUnits(input.getTotalUnits() != null ? input.getTotalUnits() : t.getTotalUnits());
+        t.setImageUrls(input.getImageUrls() != null ? input.getImageUrls() : t.getImageUrls());
+        t.setActive(input.getActive() != null ? input.getActive() : t.getActive());
+        UnitType saved = unitTypeRepo.save(t);
+        return ResponseEntity.ok(saved);
+    }
+
+    // Xóa UnitType
+    @DeleteMapping("/types/{typeId}")
+    public ResponseEntity<?> deleteType(@PathVariable Long typeId) {
+        Optional<UnitType> opt = unitTypeRepo.findById(typeId);
+        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message", "Không tìm thấy loại"));
+        unitTypeRepo.deleteById(typeId);
+        return ResponseEntity.ok(Map.of("status", "deleted"));
     }
 
 

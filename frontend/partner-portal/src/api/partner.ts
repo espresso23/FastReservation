@@ -30,12 +30,25 @@ export async function listMyEstablishments(ownerId: string) {
 
 export async function listTypes(establishmentId: string) {
   const res = await api.get(`/partner/types/${establishmentId}`)
-  return Array.isArray(res.data) ? (res.data as UnitType[]) : []
+  const payload: any = res.data
+  if (Array.isArray(payload)) return payload as UnitType[]
+  if (payload && Array.isArray(payload.items)) return payload.items as UnitType[]
+  return []
 }
 
 export async function createType(input: Omit<UnitType, 'id'>) {
   const res = await api.post('/partner/types', input)
   return res.data as UnitType
+}
+
+export async function updateType(typeId: number, input: Partial<UnitType>) {
+  const res = await api.put(`/partner/types/${typeId}`, input)
+  return res.data as UnitType
+}
+
+export async function deleteType(typeId: number) {
+  const res = await api.delete(`/partner/types/${typeId}`)
+  return res.data as { status: string }
 }
 
 export async function uploadImage(file: File, folder: string = 'types') {
