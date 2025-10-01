@@ -40,6 +40,27 @@ export default function UserBookingPage() {
     try {
       const pmt = (override?.prompt ?? prompt) || ''
       let paramsToSend = override?.params ?? currentParams
+      
+      // Reset state if user is starting a new search (not auto-skip)
+      if (!override?.auto && pmt.trim() && quiz?.quiz_completed) {
+        // User is starting a new search, reset everything
+        setQuiz(null)
+        setSuggestions(null)
+        setCurrentParams({})
+        setSelectedOpt('')
+        setCustomOpt('')
+        setSelectedAmenities([])
+        setSelectedImages([])
+        setMessages(prev => [...prev, 
+          { role: 'user', text: pmt },
+          { role: 'assistant', text: 'Tôi hiểu bạn muốn tìm kiếm mới. Hãy để tôi hỗ trợ bạn!' }
+        ])
+        setPrompt('') // Clear input field
+        paramsToSend = {}
+      } else if (!override?.auto && pmt.trim()) {
+        // Add user message to chat for normal interactions
+        setMessages(prev => [...prev, { role: 'user', text: pmt }])
+      }
       // Client-side quick inference to avoid re-asking basic facts
       const strip = (s:string) => (
         s
@@ -482,8 +503,23 @@ export default function UserBookingPage() {
             <input type="number" className="border rounded px-2 py-1" placeholder="Số đêm" value={currentParams.duration||''} onChange={(e)=>setCurrentParams({ ...currentParams, duration: Number(e.target.value||0) })} />
             <input type="number" className="border rounded px-2 py-1" placeholder="Ngân sách tối đa" value={currentParams.max_price||''} onChange={(e)=>setCurrentParams({ ...currentParams, max_price: Number(e.target.value||0) })} />
           </div>
-          <div className="mt-2">
+          <div className="mt-2 flex gap-2">
             <button className="px-3 py-1 border rounded" onClick={()=>{ setPrompt(''); send({ params: currentParams, prompt: '' }) }} disabled={loading}>Tìm gợi ý</button>
+            <button 
+              className="px-3 py-1 bg-orange-600 text-white rounded hover:bg-orange-700" 
+              onClick={() => {
+                setQuiz(null)
+                setSuggestions(null)
+                setCurrentParams({})
+                setSelectedOpt('')
+                setCustomOpt('')
+                setSelectedAmenities([])
+                setSelectedImages([])
+                setMessages(prev => [...prev, { role: 'assistant', text: 'Tôi đã reset tìm kiếm. Hãy mô tả nhu cầu mới của bạn!' }])
+              }}
+            >
+              Tìm kiếm mới
+            </button>
           </div>
         </div>
       )}

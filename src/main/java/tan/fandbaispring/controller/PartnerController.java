@@ -245,6 +245,60 @@ public class PartnerController {
     }
 
     // ----------------------------------------------------------------------
+    // --- API 2.1: Tạo Cơ sở Mới (Không cần ảnh - JSON only) ---
+    // ----------------------------------------------------------------------
+
+    @PostMapping(value = "/establishments/simple", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> createEstablishmentSimple(@RequestBody EstablishmentCreationRequest req) {
+        String partnerId = req.getOwnerId();
+
+        // 1. Kiểm tra ID đối tác
+        Optional<User> partnerOpt = userRepository.findById(Long.valueOf(partnerId));
+        if (partnerOpt.isEmpty() || partnerOpt.get().getRole() != UserRole.PARTNER) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("message", "ID đối tác không hợp lệ."));
+        }
+
+        try {
+            // 2. Tạo Establishment mới (không có ảnh)
+            Establishment newEstablishment = new Establishment();
+            newEstablishment.setId(UUID.randomUUID().toString());
+            newEstablishment.setOwnerId(partnerId);
+            newEstablishment.setName(req.getName());
+            newEstablishment.setType(EstablishmentType.valueOf(req.getType()));
+            newEstablishment.setCity(req.getCity());
+            newEstablishment.setAddress(req.getAddress());
+            newEstablishment.setDescriptionLong(req.getDescriptionLong());
+            newEstablishment.setAmenitiesList(req.getAmenitiesList());
+            newEstablishment.setAvailable(req.isAvailable());
+            newEstablishment.setHasInventory(req.isHasInventory());
+
+            // Không có ảnh - để trống
+            newEstablishment.setImageUrlMain(null);
+            newEstablishment.setImageUrlsGallery(new ArrayList<>());
+
+            // Lưu vào database
+            Establishment saved = establishmentRepo.saveAndFlush(newEstablishment);
+
+            // 3. Cập nhật Vector Store
+            aiService.indexEstablishmentAfterCommit(saved.getId());
+
+            return ResponseEntity.status(HttpStatus.CREATED).body(saved);
+        } catch (Exception ex) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("message", "Lỗi tạo cơ sở: " + ex.getMessage()));
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // --- API 2.2: Lấy danh sách Establishments (Để mapping UnitType) ---
+    // ----------------------------------------------------------------------
+
+    @GetMapping("/establishments")
+    public ResponseEntity<?> listEstablishments() {
+        List<Establishment> establishments = establishmentRepo.findAll();
+        return ResponseEntity.ok(establishments);
+    }
+
+    // ----------------------------------------------------------------------
     // --- API 3: Quản lý Inventory (Tồn kho) ---
     // ----------------------------------------------------------------------
 
