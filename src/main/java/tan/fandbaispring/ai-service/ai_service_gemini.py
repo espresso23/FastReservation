@@ -104,6 +104,7 @@ class QuizResponseModel(BaseModel):
     key_to_collect: Optional[str] = Field(None, description="Tên tham số cần thu thập tiếp theo.")
     final_params: Dict[str, Any] = Field(description="Các tham số đã được cập nhật và chuẩn hóa.")
     image_options: Optional[List[ImageOption]] = Field(default=None, description="Các lựa chọn dạng thẻ ảnh cho câu hỏi hiện tại")
+    options: Optional[List[str]] = Field(default=None, description="Các lựa chọn dạng text/tag cho câu hỏi hiện tại")
 
 # Danh sách tham số cốt lõi (dùng cho cả fallback)
 PARAM_ORDER = [
@@ -163,7 +164,6 @@ def image_options_from_real_data(param_key: str, final_params: Dict[str, Any]) -
             if not img:
                 continue
             label = f"{name}"
-            # Không tạo image options cho style_vibe nữa (đã loại bỏ)
             params = None
             options.append(ImageOption(label=label, image_url=img, value=name, params=params))
         return options or None
@@ -380,17 +380,7 @@ def normalize_params(final_params: Dict[str, Any], user_prompt: str) -> Dict[str
                 params["_amenities_confirmed"] = bool(v)
         except Exception:
             params["_amenities_confirmed"] = False
-    # Loại bỏ style_vibe nếu có (không cần nữa)
-    if "style_vibe" in params:
-        # Chuyển style_vibe vào amenities_priority
-        style_value = params.pop("style_vibe", None)
-        if style_value and "amenities_priority" not in params:
-            params["amenities_priority"] = [style_value]
-        elif style_value and "amenities_priority" in params:
-            if isinstance(params["amenities_priority"], list):
-                params["amenities_priority"].append(style_value)
-            else:
-                params["amenities_priority"] = [params["amenities_priority"], style_value]
+    # Bỏ hỗ trợ style_vibe (đã loại bỏ)
     return params
 
 
@@ -425,7 +415,7 @@ class SearchRequest(BaseModel):
 
 class SearchResult(BaseModel):
     establishment_id: str
-    relevance_score: float
+    name: str
 
 class AddEstablishmentRequest(BaseModel):
     id: str
@@ -500,81 +490,9 @@ def fetch_single_establishment(establishment_id: str) -> Optional[Dict[str, Any]
 # --- API 1: Conditional Quiz Generation (Sử dụng LLM Suy luận) ---
 @app.post("/generate-quiz", response_model=QuizResponseModel)
 async def generate_quiz(req: QuizRequest):
-    # Fallback nếu LLM chưa sẵn sàng: logic quyết định tối thiểu, KHÔNG trả 503
+    # Chỉ dùng LLM; nếu chưa sẵn sàng thì báo lỗi
     if not llm:
-        final_params = dict(req.current_params or {})
-        # Suy luận city và loại cơ sở từ prompt nếu thiếu
-        if not final_params.get("city"):
-            guessed_city = infer_city_from_text(req.user_prompt or "")
-            if guessed_city:
-                final_params["city"] = guessed_city
-        if not final_params.get("establishment_type"):
-            plc = (req.user_prompt or "").lower()
-            if any(k in plc for k in ["khach san","khách sạn","hotel"]):
-                final_params["establishment_type"] = "HOTEL"
-            elif any(k in plc for k in ["nha hang","nhà hàng","restaurant"]):
-                final_params["establishment_type"] = "RESTAURANT"
-        # Giữ prompt gốc với dấu câu cho LLM; hạn chế heuristic hard-code
-        order = effective_param_order(final_params)
-        missing = next((k for k in order if not final_params.get(k)), None)
-        # Nếu đang thu thập amenities_priority, gợi ý options từ DB (unique, có city/type nếu có)
-        if missing == 'amenities_priority':
-            try:
-                conn = psycopg2.connect(
-                    host=DB_CONFIG['host'], port=DB_CONFIG['port'], database=DB_CONFIG['database'],
-                    user=DB_CONFIG['user'], password=DB_CONFIG['password']
-                )
-                cur = conn.cursor()
-                try:
-                    cur.execute("SET search_path TO public;")
-                except Exception:
-                    pass
-                where = []
-                params = []
-                if final_params.get('city'):
-                    where.append("lower(city) = lower(%s)"); params.append(str(final_params['city']))
-                if final_params.get('establishment_type'):
-                    where.append("type = %s"); params.append(str(final_params['establishment_type']))
-                sql = "SELECT id FROM establishment"
-                if where:
-                    sql += " WHERE " + " AND ".join(where)
-                sql += " LIMIT 100"
-                cur.execute(sql, tuple(params))
-                ids = [r[0] for r in cur.fetchall()]
-                amen = []
-                if ids:
-                    cur.execute("SELECT DISTINCT amenities_list FROM establishment_amenities_list WHERE establishment_id = ANY(%s)", (ids,))
-                    amen = [str(r[0]).strip() for r in cur.fetchall() if r and r[0]]
-                # unique + lọc rỗng
-                opts = sorted(list({a for a in amen if a}))
-                if opts:
-                    return {
-                        "quiz_completed": False,
-                        "missing_quiz": FALLBACK_QUESTIONS.get('amenities_priority', 'Bạn ưu tiên tiện ích nào?'),
-                        "key_to_collect": 'amenities_priority',
-                        "final_params": final_params,
-                        "options": opts,
-                        "image_options": None
-                    }
-            except Exception as _:
-                pass
-        if missing:
-            # TẠM THỜI TẮT image_options → FE chỉ hiển thị TAGS/INPUT
-            image_opts = None
-            return {
-                "quiz_completed": False,
-                "missing_quiz": FALLBACK_QUESTIONS.get(missing, f"Vui lòng cung cấp '{missing}'"),
-                "key_to_collect": missing,
-                "final_params": final_params,
-                "options": FALLBACK_OPTIONS.get(missing),
-                "image_options": image_opts
-            }
-        return {
-            "quiz_completed": True,
-            "missing_quiz": None,
-            "key_to_collect": None,
-            "final_params": final_params
-        }
+        raise HTTPException(status_code=503, detail="LLM chưa được khởi tạo")
     
     # Sử dụng LangChain JsonOutputParser
     parser = JsonOutputParser(pydantic_object=QuizResponseModel)
@@ -632,31 +550,9 @@ async def generate_quiz(req: QuizRequest):
         normalized = apply_defaults(normalized)
         result['final_params'] = normalized
 
-        # Ép loại bỏ hoàn toàn style_vibe nếu LLM trả về và sửa câu hỏi
-        if isinstance(result, dict):
-            # Nếu LLM lỡ tạo field style_vibe
-            fp = result.get('final_params') or {}
-            if isinstance(fp, dict) and 'style_vibe' in fp:
-                sv = fp.pop('style_vibe')
-                if sv:
-                    am = fp.get('amenities_priority')
-                    if isinstance(am, list):
-                        am.append(sv)
-                    elif am:
-                        fp['amenities_priority'] = [am, sv]
-                    else:
-                        fp['amenities_priority'] = [sv]
-                result['final_params'] = fp
-            # Nếu key_to_collect bị gợi ý là style_vibe thì chuyển thành amenities_priority
-            if result.get('key_to_collect') == 'style_vibe':
-                result['key_to_collect'] = 'amenities_priority'
-                result['missing_quiz'] = FALLBACK_QUESTIONS.get('amenities_priority')
-            # Nếu câu hỏi có nội dung phong cách/không khí, thay thế luôn
-            mq = (result.get('missing_quiz') or '')
-            if any(k in str(mq).lower() for k in ['phong cách','phong cach','không khí','khong khi','style','vibe']):
-                result['missing_quiz'] = FALLBACK_QUESTIONS.get('amenities_priority')
+        # Không xử lý hoặc chấp nhận bất kỳ khóa 'style' nào từ LLM
 
-        # Tự quyết định thiếu gì dựa trên PARAM_ORDER (bỏ qua gợi ý của LLM như style_vibe)
+        # Tự quyết định thiếu gì dựa trên PARAM_ORDER
         ord2 = effective_param_order(result['final_params'])
         # Xác định thiếu thực sự (coi như có nếu không rỗng sau chuẩn hoá)
         missing_key_default = None
@@ -707,62 +603,43 @@ async def generate_quiz(req: QuizRequest):
         return result
     except Exception as e:
         logging.error(f"LỖI GỌI LLM/Parser: {e}")
-        # Cuối cùng vẫn có fallback để không chặn luồng FE
-        final_params = dict(req.current_params or {})
-        if not final_params.get("city"):
-            guessed_city = infer_city_from_text(req.user_prompt or "")
-            if guessed_city:
-                final_params["city"] = guessed_city
-        if not final_params.get("establishment_type"):
-            plc = (req.user_prompt or "").lower()
-            if any(k in plc for k in ["khach san","khách sạn","hotel"]):
-                final_params["establishment_type"] = "HOTEL"
-            elif any(k in plc for k in ["nha hang","nhà hàng","restaurant"]):
-                final_params["establishment_type"] = "RESTAURANT"
-        order3 = effective_param_order(final_params)
-        missing = next((k for k in order3 if not final_params.get(k)), None)
-        if missing == 'city' and final_params.get('city') and not final_params.get('establishment_type'):
-            missing = 'establishment_type'
-        if missing:
-            # TẮT image_options khi fallback
-            image_opts = None
-            return {
-                "quiz_completed": False,
-                "missing_quiz": FALLBACK_QUESTIONS.get(missing),
-                "key_to_collect": missing,
-                "final_params": final_params,
-                "options": FALLBACK_OPTIONS.get(missing),
-                "image_options": image_opts
-            }
-        return {
-            "quiz_completed": True,
-            "missing_quiz": None,
-            "key_to_collect": None,
-            "final_params": final_params
-        }
+        raise HTTPException(status_code=502, detail=f"Lỗi LLM hoặc Parser: {e}")
 
 
 # --- API 2: RAG Search ---
 @app.post("/rag-search", response_model=List[SearchResult])
 async def rag_search(req: SearchRequest):
-    if not vectorstore: 
-        return []
+    if not vectorstore:
+        raise HTTPException(status_code=503, detail="Vector Store chưa được khởi tạo")
         
     # Lấy các tham số đã thu thập
-    companion = req.params.get("travel_companion", "tôi")
+    companion = req.params.get("travel_companion")
     city = req.params.get("city")  # có thể None
     amenities = req.params.get("amenities_priority", "tiện ích cơ bản")
+    est_type = req.params.get("establishment_type") or req.params.get("type")
+    check_in_date = req.params.get("check_in_date")
+    check_out_date = req.params.get("check_out_date")
+    duration = req.params.get("duration")
     
     # Tạo Query mô tả chi tiết
     city_text = city or "địa điểm bất kỳ"
+    # Chuẩn hoá amenities: chấp nhận cả mảng hoặc chuỗi
+    if isinstance(amenities, list):
+        amenities_list = [str(a) for a in amenities if a is not None and str(a).strip()]
+        amenities_text = ", ".join(amenities_list) if amenities_list else "tiện ích cơ bản"
+    else:
+        amenities_text = str(amenities) if amenities is not None else "tiện ích cơ bản"
+
+    # Chỉ dùng city + amenities (+ type nếu có) cho truy vấn vector
+    type_text = f" Loại: {str(est_type).upper()}." if est_type else ""
     query_text = (
-        f"Tìm kiếm cơ sở ở {city_text}. "
-        f"Cần tiện nghi phù hợp cho {companion} và ưu tiên các tiện ích: {amenities}. "
+        f"Tìm kiếm cơ sở ở {city_text}.{type_text} "
+        f"Ưu tiên các tiện ích: {amenities_text}. "
         f"Mô tả không gian và trải nghiệm."
     )
     
-    # Truy vấn k lớn hơn; filter city sẽ được hậu kiểm để tránh lệch dấu/biến thể
-    search_kwargs = {"k": 30}
+    # Tăng k để có nhiều ứng viên hơn trước khi hậu kiểm
+    search_kwargs = {"k": 100}
     results = vectorstore.similarity_search_with_score(query=query_text, **search_kwargs)
     
     # Chuẩn hoá so sánh không dấu
@@ -772,7 +649,17 @@ async def rag_search(req: SearchRequest):
         return ''.join(c for c in unicodedata.normalize('NFD', str(s).strip()) if unicodedata.category(c) != 'Mn').lower()
 
     city_norm = strip_accents(city)
-    amen_norm = strip_accents(amenities)
+    # Chuẩn hoá tiện ích để so khớp: hỗ trợ mảng -> match bất kỳ tiện ích nào
+    amen_norm_list: List[str] = []
+    if isinstance(amenities, list):
+        try:
+            amen_norm_list = [strip_accents(a) for a in amenities if a is not None]
+        except Exception:
+            amen_norm_list = []
+    else:
+        amen_norm_single = strip_accents(amenities)
+        if amen_norm_single:
+            amen_norm_list = [amen_norm_single]
 
     # Khử trùng lặp theo establishment_id và hậu kiểm city/amenities
     best_by_id: Dict[str, float] = {}
@@ -790,7 +677,18 @@ async def rag_search(req: SearchRequest):
         # Hậu kiểm amenities nếu có
         if amenities:
             am_list = strip_accents(meta.get('amenities_list') or meta.get('amenities'))
-            if amen_norm and amen_norm not in am_list:
+            if amen_norm_list:
+                # match nếu BẤT KỲ tiện ích nào trong danh sách xuất hiện trong metadata
+                if not any(an in am_list for an in amen_norm_list):
+                    continue
+        # Hậu kiểm type nếu có
+        if est_type:
+            try:
+                meta_type = str(meta.get('type') or '').strip().upper()
+                want_type = str(est_type).strip().upper()
+                if not meta_type or meta_type != want_type:
+                    continue
+            except Exception:
                 continue
         # Lấy điểm tốt hơn (score nhỏ hơn coi là tốt hơn)
         prev = best_by_id.get(est_id)
@@ -798,75 +696,120 @@ async def rag_search(req: SearchRequest):
             best_by_id[est_id] = score
             metas_by_id[est_id] = meta
 
-    suggestions = [SearchResult(establishment_id=eid, relevance_score=best_by_id[eid]) for eid in best_by_id.keys()]
+    suggestions = [SearchResult(establishment_id=eid, name=str((metas_by_id.get(eid) or {}).get('name') or '')) for eid in best_by_id.keys()]
 
-    # Fallback: nếu sau hậu kiểm rỗng, nới lỏng điều kiện lần lượt
-    if not suggestions:
-        # 1) Bỏ lọc amenities nhưng giữ city
-        best_by_id = {}
-        for doc, score in results:
-            meta = doc.metadata or {}
-            est_id = meta.get('id')
-            if not est_id:
-                continue
-            if city_norm and strip_accents(meta.get('city')) != city_norm:
-                continue
-            prev = best_by_id.get(est_id)
-            if prev is None or score < prev:
-                best_by_id[est_id] = score
-        suggestions = [SearchResult(establishment_id=eid, relevance_score=best_by_id[eid]) for eid in best_by_id.keys()]
-
-    if not suggestions:
-        # 2) Bỏ tất cả hậu kiểm, trả top-N duy nhất
-        seen = set()
-        uniq = []
-        for doc, score in results:
-            est_id = (doc.metadata or {}).get('id')
-            if not est_id or est_id in seen:
-                continue
-            seen.add(est_id)
-            uniq.append(SearchResult(establishment_id=est_id, relevance_score=score))
-            if len(uniq) >= 10:
-                break
-        suggestions = uniq
-
-    # 3) Fallback bổ sung: nếu vẫn không có cơ sở ở đúng city chứa amenities, đọc trực tiếp metadata theo city (accent đúng)
-    if city and amen_norm and vectorstore is not None:
+    # Hậu kiểm thêm: lọc theo khả dụng dựa trên travel_companion (số khách) và ngày, nếu cung cấp
+    def infer_num_guests(companion_val: Optional[str]) -> Optional[int]:
+        if not companion_val:
+            return None
         try:
-            coll = vectorstore._collection  # type: ignore
-            # Thử cả city người dùng nhập và một số biến thể có dấu phổ biến
-            city_variants = {city}
-            if city_norm == 'da nang':
-                city_variants.add('Đà Nẵng')
-            if city_norm == 'ha noi':
-                city_variants.add('Hà Nội')
-            if city_norm in ('ho chi minh','tphcm','tp ho chi minh','sai gon'):
-                city_variants.update({'Hồ Chí Minh','TP Hồ Chí Minh','TP. Hồ Chí Minh'})
-
-            added = False
-            for cv in city_variants:
-                try:
-                    data = coll.get(where={"city": cv}, include=["metadatas"], limit=200)
-                except Exception:
-                    continue
-                metas = data.get('metadatas') or []
-                for m in metas:
-                    if not isinstance(m, dict):
-                        continue
-                    est_id = m.get('id')
-                    if not est_id:
-                        continue
-                    am = strip_accents(m.get('amenities_list') or m.get('amenities'))
-                    if amen_norm in am:
-                        # Thêm nếu chưa có trong suggestions
-                        if all(s.establishment_id != est_id for s in suggestions):
-                            suggestions.insert(0, SearchResult(establishment_id=est_id, relevance_score=0.25))
-                            added = True
-                if added:
-                    break
+            tc = str(companion_val).strip().lower()
+            mapping = {"single": 1, "couple": 2, "family": 4, "friends": 3}
+            return mapping.get(tc, int(float(tc)))
         except Exception:
+            return None
+
+    num_guests = infer_num_guests(companion)
+
+    # Chuẩn hoá ngày nếu có
+    start_dt = None
+    end_dt = None
+    try:
+        if check_in_date:
+            from datetime import datetime, timedelta
+            start_dt = datetime.strptime(str(check_in_date), "%Y-%m-%d")
+            if check_out_date:
+                end_dt = datetime.strptime(str(check_out_date), "%Y-%m-%d")
+            elif duration:
+                try:
+                    dur = int(str(duration))
+                    end_dt = start_dt + timedelta(days=max(1, dur))
+                except Exception:
+                    end_dt = None
+    except Exception:
+        start_dt = None
+        end_dt = None
+
+    if num_guests is not None:
+        try:
+            conn = psycopg2.connect(
+                host=DB_CONFIG['host'],
+                port=DB_CONFIG['port'],
+                database=DB_CONFIG['database'],
+                user=DB_CONFIG['user'],
+                password=DB_CONFIG['password']
+            )
+            cur = conn.cursor()
+            try:
+                cur.execute("SET search_path TO public;")
+            except Exception:
+                pass
+
+            def establishment_has_capacity(est_id: str) -> bool:
+                # Cố gắng kiểm tra theo nhiều tên cột khả dĩ để tránh phụ thuộc schema cứng
+                candidate_cols = [
+                    "max_guests", "maxGuests", "capacity", "base_capacity", "baseCapacity"
+                ]
+                for col in candidate_cols:
+                    try:
+                        cur.execute(f"SELECT id FROM unit_type WHERE establishment_id = %s AND {col} >= %s LIMIT 1", (est_id, num_guests))
+                        if cur.fetchone():
+                            return True
+                    except Exception:
+                        continue
+                # Nếu không dò được theo cột, coi như không lọc
+                return True
+
+            def establishment_has_availability(est_id: str) -> bool:
+                if start_dt is None or end_dt is None:
+                    return True
+                # Thử các tên cột phổ biến
+                date_col = "date"
+                avail_col_candidates = ["available", "available_count", "available_units", "availableRooms"]
+                try:
+                    # Lấy các unit_type đủ sức chứa
+                    cur.execute("SELECT id FROM unit_type WHERE establishment_id = %s", (est_id,))
+                    unit_ids = [r[0] for r in cur.fetchall()]
+                    if not unit_ids:
+                        return False
+                    for avail_col in avail_col_candidates:
+                        try:
+                            cur.execute(
+                                f"SELECT COUNT(*) FROM unit_availability WHERE unit_type_id = ANY(%s) AND {date_col} >= %s AND {date_col} < %s AND {avail_col} > 0",
+                                (unit_ids, start_dt, end_dt)
+                            )
+                            cnt = cur.fetchone()[0]
+                            if cnt and cnt > 0:
+                                return True
+                        except Exception:
+                            continue
+                    # Nếu không query được cột nào, không chặn kết quả
+                    return True
+                except Exception:
+                    return True
+
+            filtered = []
+            for s in suggestions:
+                try:
+                    if establishment_has_capacity(s.establishment_id) and establishment_has_availability(s.establishment_id):
+                        filtered.append(s)
+                except Exception:
+                    filtered.append(s)
+            suggestions = filtered
+        except Exception:
+            # Nếu lỗi DB, giữ nguyên danh sách
             pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    # Không dùng fallback nới lỏng; trả đúng những gì VectorStore tìm thấy sau hậu kiểm
             
+    # Trả về đúng 3 cơ sở điểm tốt nhất (score nhỏ hơn là tốt hơn)
+    # Giữ nguyên thứ tự tốt nhất dựa trên score đã chọn trước đó; cắt còn 3
+    suggestions = suggestions[:3]
     return suggestions
 
 # --- API 3: Cập nhật Vector Store ---

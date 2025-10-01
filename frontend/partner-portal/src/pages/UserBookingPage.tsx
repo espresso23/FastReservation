@@ -380,8 +380,12 @@ export default function UserBookingPage() {
       }
     }
 
-    // Tạo params kế tiếp; KHÔNG tự đặt _amenities_confirmed ở nút Gửi (chỉ đặt khi bấm "Bỏ qua")
-    const nextParams = { ...currentParams, [k]: k==='duration'||k==='max_price' ? Number(val) : val }
+    // Tạo params kế tiếp; nếu người dùng vừa gửi tiện ích thì coi như đã xác nhận (_amenities_confirmed=true)
+    const extra: Record<string, any> = {}
+    if (k === 'amenities_priority') {
+      extra._amenities_confirmed = true
+    }
+    const nextParams = { ...currentParams, ...extra, [k]: k==='duration'||k==='max_price' ? Number(val) : val }
     setCurrentParams(nextParams)
     // Tùy biến câu trả lời hiển thị cho bước ngày: nêu rõ ngày đến và số đêm
     let userText = `Tôi chọn ${keyLabel(k)}: ${humanizeValue(k, val)}`
