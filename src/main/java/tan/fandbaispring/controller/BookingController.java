@@ -114,12 +114,16 @@ public class BookingController {
                     .toList();
         }
 
-        // Áp dụng lọc theo loại cơ sở nếu có
+        // Áp dụng lọc theo loại cơ sở nếu có (lần 1: trên danh sách Establishment)
+        java.util.Set<String> allowedEstablishmentIdsByType = new java.util.HashSet<>();
         if (typeParam != null && !typeParam.isBlank()) {
             String want = typeParam.toUpperCase();
             establishments = establishments.stream()
                     .filter(e -> e.getType() != null && e.getType().name().equalsIgnoreCase(want))
                     .toList();
+            for (Establishment e : establishments) {
+                if (e.getId() != null) allowedEstablishmentIdsByType.add(e.getId());
+            }
         }
 
         List<FinalResultResponse> finalSuggestions = new ArrayList<>();
@@ -208,6 +212,10 @@ public class BookingController {
                 cityEsts = cityEsts.stream()
                         .filter(e -> e.getType() != null && e.getType().name().equalsIgnoreCase(want))
                         .toList();
+                allowedEstablishmentIdsByType.clear();
+                for (Establishment e : cityEsts) {
+                    if (e.getId() != null) allowedEstablishmentIdsByType.add(e.getId());
+                }
             }
             for (Establishment establishment : cityEsts) {
                 List<UnitType> types = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishment.getId());
@@ -246,6 +254,14 @@ public class BookingController {
                 }
             }
         }
+        // Bộ lọc bổ sung CUỐI CÙNG theo loại cơ sở (đảm bảo không lẫn loại khác)
+        if (typeParam != null && !typeParam.isBlank() && !allowedEstablishmentIdsByType.isEmpty()) {
+            final java.util.Set<String> allowed = allowedEstablishmentIdsByType;
+            finalSuggestions = finalSuggestions.stream()
+                    .filter(s -> s.getEstablishmentId() != null && allowed.contains(s.getEstablishmentId()))
+                    .toList();
+        }
+
         // Xếp hạng lai: ưu tiên còn chỗ theo booking, giá trong ngân sách, khớp tiện ích (nếu có)
         final List<String> amenNeed = new ArrayList<>();
         try {

@@ -10,9 +10,11 @@ import { Badge } from '../components/ui/badge'
 import { Avatar, AvatarFallback } from '../components/ui/avatar'
 import { Label } from '../components/ui/label'
 import { Send, Bot, User, Sparkles } from 'lucide-react'
+import { useAuth } from '../auth/AuthContext'
 // Popover no longer used directly here after switching DatePicker to icon trigger
 
 export default function UserBookingPage() {
+  const { user } = useAuth()
   const [prompt, setPrompt] = useState('Tôi muốn đi Đà Nẵng ngày 2025-10-10 2 đêm, có phòng gym')
   const [currentParams, setCurrentParams] = useState<Record<string, any>>({})
   const [quiz, setQuiz] = useState<QuizResponse | null>(null)
@@ -190,7 +192,7 @@ export default function UserBookingPage() {
     setLoading(true); setMsg(null)
     try {
       const payload = {
-        userId: 1,
+        userId: user?.id ? Number(user.id) : 1,
         establishmentId: s.establishmentId,
         bookedItemType: s.itemType || s.floorArea || 'TYPE',
         startDate: currentParams.check_in_date || new Date().toISOString().slice(0,10),
@@ -258,8 +260,10 @@ export default function UserBookingPage() {
   const renderInputForKey = (k?: string) => {
     if (!k) return null
     if (k === 'check_in_date') {
-      // Nếu đã có check_in_date thì chọn single; nếu chưa, cho phép chọn range (đến/đi)
+      // Khi đang ở bước quiz hỏi ngày, luôn cho phép chọn khoảng ngày (đến & đi)
+      const isQuizStep = !!quiz && !quiz.quiz_completed
       const hasStart = !!currentParams.check_in_date
+      const allowRange = isQuizStep && !currentParams.check_out_date
       return (
         <div className="w-full">
           <DatePicker
@@ -281,7 +285,7 @@ export default function UserBookingPage() {
             }}
             trigger="icon"
             ariaLabel="Chọn ngày"
-            range={!hasStart}
+            range={allowRange || !hasStart}
           />
         </div>
       )
@@ -329,7 +333,14 @@ export default function UserBookingPage() {
 
     const nextParams = { ...currentParams, [k]: k==='duration'||k==='max_price' ? Number(val) : val }
     setCurrentParams(nextParams)
-    const userText = `Tôi chọn ${keyLabel(k)}: ${humanizeValue(k, val)}`
+    // Tùy biến câu trả lời hiển thị cho bước ngày: nêu rõ ngày đến và số đêm
+    let userText = `Tôi chọn ${keyLabel(k)}: ${humanizeValue(k, val)}`
+    if (k === 'check_in_date') {
+      const nights = Number(nextParams.duration || 0)
+      if (!isNaN(nights) && nights > 0) {
+        userText = `Tôi chọn ngày đến: ${nextParams.check_in_date} và ở lại ${nights} đêm`
+      }
+    }
     setPrompt('')
     await send({ params: nextParams, prompt: userText })
   }

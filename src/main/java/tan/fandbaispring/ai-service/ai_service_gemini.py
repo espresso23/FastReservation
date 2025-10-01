@@ -14,6 +14,8 @@ import logging
 from dotenv import load_dotenv
 import unicodedata
 import warnings
+import re
+from datetime import datetime, timedelta
 from langchain_core._api import LangChainDeprecationWarning
 warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
 
@@ -256,6 +258,82 @@ def normalize_params(final_params: Dict[str, Any], user_prompt: str) -> Dict[str
         guessed = infer_city_from_text(user_prompt or "")
         if guessed:
             params["city"] = guessed
+    # --- Suy luận ngày/thời lượng từ prompt và đồng bộ hóa các trường liên quan ---
+    try:
+        text = (user_prompt or "")
+        # 1) Bắt các ngày dạng YYYY-MM-DD
+        date_strs = re.findall(r"(20\d{2}-\d{2}-\d{2})", text)
+        parsed_dates: List[datetime] = []
+        for ds in date_strs:
+            try:
+                parsed_dates.append(datetime.strptime(ds, "%Y-%m-%d"))
+            except Exception:
+                pass
+        # 2) Bắt số đêm/ngày từ prompt: "2 đêm/ngày"
+        dur_match = re.search(r"(\d+)\s*(đêm|dem|ngày|ngay)", unicodedata.normalize('NFD', text).lower())
+        prompt_nights: Optional[int] = None
+        if dur_match:
+            try:
+                prompt_nights = int(dur_match.group(1))
+            except Exception:
+                prompt_nights = None
+
+        # Đồng bộ từ params hiện có
+        check_in = None
+        check_out = None
+        try:
+            if params.get("check_in_date"):
+                check_in = datetime.strptime(str(params.get("check_in_date")), "%Y-%m-%d")
+        except Exception:
+            check_in = None
+        try:
+            if params.get("check_out_date"):
+                check_out = datetime.strptime(str(params.get("check_out_date")), "%Y-%m-%d")
+        except Exception:
+            check_out = None
+        duration_nights = None
+        try:
+            if params.get("duration") is not None:
+                duration_nights = int(str(params.get("duration")))
+        except Exception:
+            duration_nights = None
+
+        # Ưu tiên: nếu bắt được 2 ngày trong prompt → thiết lập từ-to & duration
+        if len(parsed_dates) >= 2:
+            start = min(parsed_dates[0], parsed_dates[1])
+            end = max(parsed_dates[0], parsed_dates[1])
+            nights = max(1, (end - start).days)
+            check_in = start
+            check_out = end
+            duration_nights = nights
+        elif len(parsed_dates) == 1 and check_in is None:
+            check_in = parsed_dates[0]
+
+        # Nếu có check_in và prompt có số đêm → tính check_out
+        if check_in is not None and prompt_nights and (check_out is None):
+            duration_nights = prompt_nights if (duration_nights is None) else duration_nights
+            if duration_nights is None or duration_nights <= 0:
+                duration_nights = prompt_nights
+            check_out = check_in + timedelta(days=duration_nights or 1)
+
+        # Nếu có check_in và duration → tính check_out
+        if check_in is not None and (duration_nights is not None) and check_out is None:
+            check_out = check_in + timedelta(days=max(1, duration_nights))
+
+        # Nếu có check_in và check_out nhưng thiếu duration → tính duration
+        if check_in is not None and check_out is not None and (duration_nights is None or duration_nights <= 0):
+            duration_nights = max(1, (check_out - check_in).days)
+
+        # Ghi lại vào params dưới dạng ISO yyyy-MM-dd
+        if check_in is not None:
+            params["check_in_date"] = check_in.strftime("%Y-%m-%d")
+        if check_out is not None:
+            params["check_out_date"] = check_out.strftime("%Y-%m-%d")
+        if duration_nights is not None and duration_nights > 0:
+            params["duration"] = duration_nights
+    except Exception:
+        # Bỏ qua lỗi parse ngày để không chặn luồng
+        pass
     brand = detect_brand_name(mixed, city)
     if brand:
         params["brand_name"] = brand
