@@ -24,11 +24,10 @@ export default function UserBookingPage() {
   const defaultOptions: Record<string, string[]> = {
     establishment_type: ['HOTEL','RESTAURANT'],
     travel_companion: ['single','couple','family','friends','team','business'],
-    style_vibe: ['romantic','quiet','lively','luxury','nature','cozy','modern','classic'],
     amenities_priority: [
       'Hồ bơi','Spa','Bãi đậu xe','Gym','Buffet sáng','Gần biển','Wifi','Lễ tân 24/7','Đưa đón sân bay',
       'Pet-friendly','Phòng gia đình','Không hút thuốc','Bồn tắm','View biển','View thành phố','Gần trung tâm',
-      'Ban công','Cửa sổ','Giặt là','Thang máy'
+      'Ban công','Cửa sổ','Giặt là','Thang máy','Romantic','Quiet','Lively','Luxury','Nature','Cozy','Modern','Classic'
     ],
     duration: ['1','2','3','4','5','6','7','8','9','10'],
     has_balcony: ['yes','no'],
@@ -191,7 +190,6 @@ export default function UserBookingPage() {
       case 'check_in_date': return 'Ngày nhận';
       case 'duration': return 'Số đêm';
       case 'max_price': return 'Ngân sách tối đa (VND)';
-      case 'style_vibe': return 'Phong cách/không gian';
       case 'travel_companion': return 'Đi cùng ai';
       case 'amenities_priority': return 'Tiện ích ưu tiên';
       case 'has_balcony': return 'Có ban công?';
@@ -277,7 +275,7 @@ export default function UserBookingPage() {
   }
 
   // Zero-result relax actions
-  const relaxAndSearch = async (action: 'more_budget'|'drop_amenities'|'any_style'|'shift_date') => {
+  const relaxAndSearch = async (action: 'more_budget'|'drop_amenities'|'shift_date') => {
     const np = { ...currentParams }
     if (action === 'more_budget') {
       const cur = Number(np.max_price || 0)
@@ -285,9 +283,6 @@ export default function UserBookingPage() {
     }
     if (action === 'drop_amenities') {
       delete np.amenities_priority
-    }
-    if (action === 'any_style') {
-      delete np.style_vibe
     }
     if (action === 'shift_date') {
       try {
@@ -455,7 +450,6 @@ export default function UserBookingPage() {
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</button>
                       <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</button>
-                      <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('any_style')}>Bất kỳ phong cách</button>
                       <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</button>
                     </div>
                   </div>

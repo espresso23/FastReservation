@@ -260,7 +260,7 @@ public class PartnerController {
 
         try {
             // 2. Tạo Establishment mới (không có ảnh)
-            Establishment newEstablishment = new Establishment();
+        Establishment newEstablishment = new Establishment();
             newEstablishment.setId(UUID.randomUUID().toString());
             newEstablishment.setOwnerId(partnerId);
             newEstablishment.setName(req.getName());
@@ -282,7 +282,7 @@ public class PartnerController {
             // 3. Cập nhật Vector Store
             aiService.indexEstablishmentAfterCommit(saved.getId());
 
-            return ResponseEntity.status(HttpStatus.CREATED).body(saved);
+        return ResponseEntity.status(HttpStatus.CREATED).body(saved);
         } catch (Exception ex) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("message", "Lỗi tạo cơ sở: " + ex.getMessage()));
         }

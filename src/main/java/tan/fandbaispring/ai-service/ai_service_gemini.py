@@ -149,10 +149,8 @@ def image_options_from_real_data(param_key: str, final_params: Dict[str, Any]) -
             if not img:
                 continue
             label = f"{name}"
-            # Suy ra style nhẹ theo mô tả nếu có
+            # Không tạo image options cho style_vibe nữa (đã loại bỏ)
             params = None
-            if param_key == "style_vibe":
-                params = {"style_vibe": (final_params.get("style_vibe") or "romantic")}
             options.append(ImageOption(label=label, image_url=img, value=name, params=params))
         return options or None
     except Exception:
@@ -230,10 +228,10 @@ def infer_city_from_text(text: str) -> Optional[str]:
 
 
 def normalize_params(final_params: Dict[str, Any], user_prompt: str) -> Dict[str, Any]:
-    """Chuẩn hóa: gộp style_vibe vào amenities_priority; tách brand name nếu phát hiện."""
+    """Chuẩn hóa: tách brand name nếu phát hiện."""
     params = dict(final_params or {})
     city = params.get("city")
-    mixed = f"{user_prompt} {params.get('amenities_priority','')} {params.get('style_vibe','')}"
+    mixed = f"{user_prompt} {params.get('amenities_priority','')}"
     # Suy luận loại cơ sở từ prompt nếu có
     prompt_lc = (user_prompt or "").lower()
     if not params.get("establishment_type"):
@@ -249,21 +247,17 @@ def normalize_params(final_params: Dict[str, Any], user_prompt: str) -> Dict[str
     brand = detect_brand_name(mixed, city)
     if brand:
         params["brand_name"] = brand
-    # Gộp style_vibe vào amenities_priority
-    try:
-        style = str(params.get("style_vibe") or "").strip()
-        if style:
-            am = str(params.get("amenities_priority") or "").strip()
-            if am:
-                if style.lower() not in am.lower():
-                    params["amenities_priority"] = f"{am}, {style}"
+    # Loại bỏ style_vibe nếu có (không cần nữa)
+    if "style_vibe" in params:
+        # Chuyển style_vibe vào amenities_priority
+        style_value = params.pop("style_vibe", None)
+        if style_value and "amenities_priority" not in params:
+            params["amenities_priority"] = [style_value]
+        elif style_value and "amenities_priority" in params:
+            if isinstance(params["amenities_priority"], list):
+                params["amenities_priority"].append(style_value)
             else:
-                params["amenities_priority"] = style
-        # Loại bỏ style_vibe sau khi gộp để toàn hệ thống chỉ dùng amenities_priority
-        if "style_vibe" in params:
-            params.pop("style_vibe", None)
-    except Exception:
-        pass
+                params["amenities_priority"] = [params["amenities_priority"], style_value]
     return params
 
 
@@ -389,8 +383,8 @@ async def generate_quiz(req: QuizRequest):
                 final_params["establishment_type"] = "RESTAURANT"
         # Heuristic nhỏ: nếu prompt chứa từ khóa, suy luận nhẹ
         prompt_lc = (req.user_prompt or "").lower()
-        if "lãng mạn" in prompt_lc and not final_params.get("style_vibe"):
-            final_params["style_vibe"] = "romantic"
+        if "lãng mạn" in prompt_lc and not final_params.get("amenities_priority"):
+            final_params["amenities_priority"] = "romantic"
         missing = next((k for k in PARAM_ORDER if not final_params.get(k)), None)
         if missing:
             # TẠM THỜI TẮT image_options → FE chỉ hiển thị TAGS/INPUT
@@ -523,7 +517,6 @@ async def rag_search(req: SearchRequest):
         return []
         
     # Lấy các tham số đã thu thập
-    style = req.params.get("style_vibe", "phù hợp")
     companion = req.params.get("travel_companion", "tôi")
     city = req.params.get("city")  # có thể None
     amenities = req.params.get("amenities_priority", "tiện ích cơ bản")
@@ -531,7 +524,7 @@ async def rag_search(req: SearchRequest):
     # Tạo Query mô tả chi tiết
     city_text = city or "địa điểm bất kỳ"
     query_text = (
-        f"Tìm kiếm cơ sở ở {city_text} với phong cách {style}. "
+        f"Tìm kiếm cơ sở ở {city_text}. "
         f"Cần tiện nghi phù hợp cho {companion} và ưu tiên các tiện ích: {amenities}. "
         f"Mô tả không gian và trải nghiệm."
     )
@@ -595,7 +588,7 @@ async def rag_search(req: SearchRequest):
         # 2) Bỏ tất cả hậu kiểm, trả top-N duy nhất
         seen = set()
         uniq = []
-    for doc, score in results:
+        for doc, score in results:
             est_id = (doc.metadata or {}).get('id')
             if not est_id or est_id in seen:
                 continue
