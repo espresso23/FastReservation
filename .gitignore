@@ -43,3 +43,4 @@ build/
 logs/
 hs_err_pid*.log
 replay_pid*.log
+__pycache__
