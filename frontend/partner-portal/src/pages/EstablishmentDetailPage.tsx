@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import type { Establishment } from '../types'
+import type { Establishment, UnitType } from '../types'
+import { listTypes } from '../api/partner'
 import api from '../api/client'
 
 export default function EstablishmentDetailPage() {
   const { id } = useParams()
   const [item, setItem] = useState<Establishment | null>(null)
   const [loading, setLoading] = useState(true)
+  const [types, setTypes] = useState<UnitType[]>([])
 
   useEffect(() => {
     let mounted = true
@@ -14,6 +16,9 @@ export default function EstablishmentDetailPage() {
     api.get(`/partner/establishment/${id}`)
       .then((res) => { if (mounted) setItem(res.data) })
       .finally(() => { if (mounted) setLoading(false) })
+    if (id) {
+      listTypes(id).then((ts)=>{ if (mounted) setTypes(ts) })
+    }
     return () => { mounted = false }
   }, [id])
 
@@ -30,11 +35,18 @@ export default function EstablishmentDetailPage() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
         <div className="md:col-span-2">
           {item.imageUrlMain && (
-            <img src={item.imageUrlMain} className="w-full h-80 object-cover rounded" />
+            <div className="w-full h-[360px] rounded overflow-hidden bg-slate-100">
+              <img src={item.imageUrlMain} className="w-full h-full object-cover" />
+            </div>
           )}
-          <div className="flex gap-2 mt-2 overflow-x-auto">
+          <div className="flex gap-2 mt-2">
             {thumbs.map((u, i) => (
-              <img key={i} src={u} className="w-24 h-24 object-cover rounded" />
+              <div key={i} className="relative group">
+                <img src={u} className="w-24 h-24 object-cover rounded" />
+                <div className="absolute z-20 hidden group-hover:block left-full ml-2 top-0 w-72 h-48 bg-white shadow-xl rounded overflow-hidden">
+                  <img src={u} className="w-full h-auto object-contain" />
+                </div>
+              </div>
             ))}
           </div>
         </div>
@@ -66,6 +78,33 @@ export default function EstablishmentDetailPage() {
           <p className="text-slate-700 whitespace-pre-line">{item.descriptionLong || item.description}</p>
         </div>
       )}
+
+      <div className="mt-6">
+        <div className="font-semibold mb-2">Các loại phòng/bàn</div>
+        {types.length === 0 ? (
+          <div className="text-slate-600 text-sm">Chưa có loại nào.</div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {types.map(t => (
+              <div key={t.id} className="border rounded p-3 bg-white">
+                <div className="flex items-center justify-between">
+                  <div className="font-medium">{t.name} <span className="text-xs text-slate-500">({t.code})</span></div>
+                  <span className={`text-xs px-2 py-0.5 rounded-full border ${t.active ? 'bg-green-100 text-green-700 border-green-200':'bg-slate-100 text-slate-700 border-slate-200'}`}>{t.active ? 'Đang bán' : 'Tạm ẩn'}</span>
+                </div>
+                <div className="text-sm text-slate-600">Sức chứa: {t.capacity}{t.hasBalcony ? ' • Ban công' : ''}</div>
+                <div className="text-sm">Giá cơ bản/Đặt cọc: {(t.basePrice||t.depositAmount||0).toLocaleString()} đ</div>
+                {Array.isArray(t.imageUrls) && t.imageUrls.length>0 && (
+                  <div className="mt-2 flex gap-2 overflow-x-auto">
+                    {t.imageUrls.slice(0,4).map((u,idx)=>(
+                      <img key={idx} src={u} className="w-20 h-20 object-cover rounded" />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

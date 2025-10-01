@@ -99,7 +99,7 @@ export default function TypesPage() {
     <div>
       <h1 className="text-xl font-semibold mb-4">Loại phòng/bàn</h1>
       {/* Thanh chọn cơ sở tách riêng */}
-      <div className="mb-4 rounded border border-slate-200 bg-white p-3 flex items-center gap-3">
+      <div className="mb-6 rounded-2xl border border-slate-200 bg-white/90 backdrop-blur p-3 flex flex-wrap items-center gap-3 relative z-10">
         <div className="text-sm text-slate-600">Chọn cơ sở</div>
         <select className="border rounded px-3 py-2" value={selectedEst} onChange={(e)=>setSelectedEst(e.target.value)}>
           <option value="">-- Chọn --</option>
@@ -108,8 +108,8 @@ export default function TypesPage() {
         {currentEst && <div className="text-sm text-slate-500">{currentEst.city}</div>}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-start">
-        <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm w-full">
+      <div className="flex flex-col lg:flex-row gap-6 items-start mt-2 relative z-0">
+        <div className="w-full lg:w-1/2 rounded-2xl border border-slate-200 bg-white/90 backdrop-blur p-4 shadow-sm">
           <div className="font-medium mb-3">Tạo loại mới</div>
           {selectedEst && (
             <form onSubmit={onCreate} className="space-y-3">
@@ -118,9 +118,9 @@ export default function TypesPage() {
                   <option value="ROOM">ROOM</option>
                   <option value="TABLE">TABLE</option>
                 </select>
-                <div className="flex gap-2">
-                  <input className="flex-1 border rounded px-3 py-2" placeholder="Mã (VD: DLX)" value={form.code} onChange={(e)=>setForm({...form, code:e.target.value})} />
-                  <select className="border rounded px-2" value={presetCode} onChange={(e)=>{
+                <div className="flex gap-2 flex-nowrap items-stretch min-w-0">
+                  <input className="flex-1 min-w-0 border rounded px-3 py-2" placeholder="Mã (VD: DLX)" value={form.code} onChange={(e)=>setForm({...form, code:e.target.value})} />
+                  <select className="border rounded px-2 w-28 shrink-0" value={presetCode} onChange={(e)=>{
                     const code = e.target.value
                     setPresetCode(code)
                     const p = unitCodePresets.find(x=>x.code===code)
@@ -179,6 +179,9 @@ export default function TypesPage() {
                     {form.imageUrls.map((u,idx)=> (
                       <div key={idx} className="relative group rounded overflow-hidden">
                         <img src={u} className="w-full h-20 object-cover" />
+                        <div className="absolute z-20 hidden group-hover:block left-full ml-2 top-0 w-64 h-40 bg-white shadow-xl rounded overflow-hidden">
+                          <img src={u} className="w-full h-full object-cover" />
+                        </div>
                         <button type="button" className="absolute top-1 right-1 text-xs px-1 py-0.5 rounded bg-white/90 border hidden group-hover:block" onClick={()=>{
                           setForm(f=>({ ...f, imageUrls: (f.imageUrls||[]).filter((_,i)=>i!==idx) }))
                         }}>x</button>
@@ -228,24 +231,28 @@ export default function TypesPage() {
             </form>
           )}
         </div>
-        <div className="md:col-span-2 rounded-lg border border-slate-200 bg-white p-4 shadow-sm w-full">
+        <div className="w-full lg:w-1/2 rounded-2xl border border-slate-200 bg-white/90 backdrop-blur p-4 shadow-sm min-h-[160px]">
           <div className="font-medium mb-3">Các loại đã tạo</div>
-          <div className="space-y-2 max-h-[60vh] overflow-auto pr-2">
-				{types.map((t)=>(
-              <div key={t.id} className="border rounded-lg p-3 shadow-sm">
-                <div className="flex items-center justify-between">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[60vh] overflow-auto pr-2">
+              {types.map((t)=>(
+              <div key={t.id} className="border rounded-xl p-3 shadow-sm bg-white flex flex-col">
+                <div className="flex items-start justify-between gap-3">
                   <div>
-								<div className="font-medium">{t.name} ({t.code})</div>
-                    <div className="text-sm text-slate-600">{t.category} • Sức chứa {t.capacity} • Cơ sở: {(establishments.find(e=>e.id===t.establishmentId)?.name) || t.establishmentId}{establishments.find(e=>e.id===t.establishmentId)?.address?` — ${establishments.find(e=>e.id===t.establishmentId)?.address}`:''}</div>
+                    <div className="font-medium">{t.name} <span className="text-xs text-slate-500">({t.code})</span></div>
+                    <div className="text-xs text-slate-600 mt-0.5">{t.category} • {t.capacity} người • {(establishments.find(e=>e.id===t.establishmentId)?.name) || t.establishmentId}</div>
+                    <div className="mt-1 flex flex-wrap gap-2 text-xs">
+                      <span className={`px-2 py-0.5 rounded-full border ${t.active ? 'bg-green-100 text-green-700 border-green-200':'bg-slate-100 text-slate-700 border-slate-200'}`}>{t.active ? 'Đang bán' : 'Tạm ẩn'}</span>
+                      {t.hasBalcony && <span className="px-2 py-0.5 rounded-full border bg-slate-100 text-slate-700 border-slate-200">Ban công</span>}
+                      {t.category==='ROOM' ? (
+                        <span className="px-2 py-0.5 rounded-full border bg-slate-100 text-slate-700 border-slate-200">{t.basePrice?.toLocaleString()} đ</span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full border bg-slate-100 text-slate-700 border-slate-200">Cọc: {t.depositAmount ? t.depositAmount.toLocaleString() + ' đ' : 'Không'}</span>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3 text-sm">
-                    {t.category === 'ROOM' ? (
-                      <span>{t.basePrice?.toLocaleString()} đ</span>
-                    ) : (
-                      <span>Đặt cọc: {t.depositAmount ? t.depositAmount.toLocaleString() + ' đ' : 'Không yêu cầu'}</span>
-                    )}
-								<button className="px-2 py-1 border rounded" onClick={()=>{ setExpandedId(expandedId===t.id?null:t.id); ensureEditRow(t) }}>
-                      {expandedId===t.id ? 'Ẩn chi tiết' : 'Xem chi tiết'}
+                  <div className="flex items-center gap-2 text-sm shrink-0">
+                    <button className="px-2 py-1 border rounded" onClick={()=>{ setExpandedId(expandedId===t.id?null:t.id); ensureEditRow(t) }}>
+                      {expandedId===t.id ? 'Ẩn' : 'Sửa'}
                     </button>
                     <button className="px-2 py-1 border rounded text-red-600" onClick={async()=>{
                       if (!confirm('Xóa loại này?')) return
@@ -254,8 +261,20 @@ export default function TypesPage() {
                     }}>Xóa</button>
                   </div>
                 </div>
+                {Array.isArray(t.imageUrls) && t.imageUrls.length>0 && (
+                  <div className="mt-2 flex gap-2 overflow-x-auto">
+                    {t.imageUrls.slice(0,4).map((u,idx)=>(
+                      <div key={idx} className="relative group rounded overflow-hidden w-16 h-16">
+                        <img src={u} className="w-full h-full object-cover" />
+                        <div className="absolute z-20 hidden group-hover:block left-full ml-2 top-0 w-64 h-40 bg-white shadow-xl rounded overflow-hidden">
+                          <img src={u} className="w-full h-full object-cover" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {expandedId===t.id && (
-							<div className="mt-3 text-sm text-slate-700 grid grid-cols-2 gap-3">
+                            <div className="mt-3 text-sm text-slate-700 grid grid-cols-2 gap-3">
 								<div>
 									<label className="block text-xs text-slate-600 mb-1">Mã</label>
 									<input className="w-full border rounded px-2 py-1" value={(edit[t.id!]?.code ?? t.code) || ''}
@@ -300,16 +319,19 @@ export default function TypesPage() {
 										<input type="file" accept="image/*" onChange={async(e)=>{ const f=e.target.files?.[0]; if(!f) return; await addImage(t, f); }} />
 										<button className="px-3 py-1 border rounded" onClick={async()=>{ await onSaveRow(t) }}>Lưu thay đổi</button>
 									</div>
-									{(((edit[t.id!]?.imageUrls) || t.imageUrls || []).length>0) ? (
-										<div className="grid grid-cols-6 gap-2">
-											{((edit[t.id!]?.imageUrls) || t.imageUrls || []).map((u,idx)=> (
-												<div key={idx} className="relative group">
-													<img src={u} className="w-full h-20 object-cover rounded" />
-													<button type="button" className="absolute top-1 right-1 text-xs px-1 py-0.5 rounded bg-white/90 border hidden group-hover:block" onClick={()=>removeImage(t, idx)}>x</button>
-												</div>
-											))}
-										</div>
-									) : (
+                                    {(((edit[t.id!]?.imageUrls) || t.imageUrls || []).length>0) ? (
+                                        <div className="grid grid-cols-6 gap-2">
+                                            {((edit[t.id!]?.imageUrls) || t.imageUrls || []).map((u,idx)=> (
+                                                <div key={idx} className="relative group">
+                                                    <img src={u} className="w-full h-20 object-cover rounded" />
+                                                    <div className="absolute z-20 hidden group-hover:block left-full ml-2 top-0 w-64 h-40 bg-white shadow-xl rounded overflow-hidden">
+                                                      <img src={u} className="w-full h-full object-cover" />
+                                                    </div>
+                                                    <button type="button" className="absolute top-1 right-1 text-xs px-1 py-0.5 rounded bg-white/90 border hidden group-hover:block" onClick={()=>removeImage(t, idx)}>x</button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
 										<div className="text-slate-500">Chưa có hình ảnh</div>
 									)}
 								</div>

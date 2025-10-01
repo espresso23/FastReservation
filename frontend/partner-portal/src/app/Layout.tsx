@@ -1,18 +1,21 @@
-import { Link, Outlet } from 'react-router-dom'
+import { Link, Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import { useAuth } from '../auth/AuthContext'
 
 export default function Layout() {
+  const location = useLocation()
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 flex">
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 text-slate-800 flex">
       <Sidebar />
       <div className="flex-1 flex flex-col">
-        <header className="h-12 sticky top-0 z-30 bg-white/80 backdrop-blur border-b border-slate-200 px-6 flex items-center justify-between shadow-sm">
-          <div className="font-semibold tracking-wide">Partner Portal</div>
+        <header className="h-14 sticky top-0 z-30 bg-white/70 backdrop-blur-md border-b border-slate-200 px-6 flex items-center justify-between shadow-sm">
+          <div className="font-semibold tracking-wide text-slate-700">Partner Portal</div>
           <HeaderRight />
         </header>
-        <main className="px-8 py-6 w-full max-w-7xl mx-auto">
-          <Outlet />
+        <main className="px-6 md:px-10 py-6 w-full max-w-7xl mx-auto">
+          <div key={location.pathname} className="page-anim">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

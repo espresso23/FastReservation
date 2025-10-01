@@ -24,8 +24,14 @@ export default function BookingsPage() {
     if (!user?.id) return
     setLoading(true)
     try {
-      const res = await api.get(`/partner/bookings/${user.id}`)
-      setItems(res.data)
+      const url = user?.role === 'PARTNER' ? `/partner/bookings/${user.id}` : `/booking/user/view/${user.id}`
+      console.log('Loading bookings from:', url, 'for user:', user)
+      const res = await api.get(url)
+      console.log('Bookings response:', res.data)
+      setItems(Array.isArray(res.data) ? res.data : [])
+    } catch (error) {
+      console.error('Error loading bookings:', error)
+      setItems([])
     } finally {
       setLoading(false)
     }
@@ -34,6 +40,7 @@ export default function BookingsPage() {
   useEffect(() => { load() }, [user?.id])
 
   const updateStatus = async (id: number, status: Booking['status']) => {
+    if (user?.role !== 'PARTNER') return
     await api.post(`/partner/bookings/${id}/status`, { status })
     await load()
   }
@@ -55,10 +62,13 @@ export default function BookingsPage() {
 
   return (
     <div>
-      <h1 className="text-xl font-semibold mb-4">Quản lý Booking</h1>
+      <h1 className="text-xl font-semibold mb-4">{user?.role==='PARTNER' ? 'Quản lý Booking' : 'Đặt chỗ của tôi'}</h1>
       {loading ? 'Đang tải...' : (
         <div className="space-y-2">
-          {items.map(b => (
+          {!Array.isArray(items) || items.length === 0 ? (
+            <div className="text-slate-600">Chưa có booking nào.</div>
+          ) : (
+            items.map(b => (
             <div key={b.id} className={`border rounded p-3 flex items-center justify-between` }>
               <div className="text-sm">
                 <div className="font-medium flex items-center gap-2">
@@ -71,13 +81,10 @@ export default function BookingsPage() {
                 </div>
                 <div className="text-slate-600">Tổng: {b.totalPriceVnd?.toLocaleString()} đ • Thời lượng: {b.duration} đêm</div>
               </div>
-              <div className="flex items-center gap-2 text-sm">
-                <button className="px-2 py-1 border rounded" disabled={b.status==='CONFIRMED'} onClick={()=>updateStatus(b.id, 'CONFIRMED')}>Xác nhận</button>
-                <button className="px-2 py-1 border rounded" disabled={b.status==='PENDING_PAYMENT'} onClick={()=>updateStatus(b.id, 'PENDING_PAYMENT')}>Pending</button>
-                <button className="px-2 py-1 border rounded" disabled={b.status==='CANCELLED'} onClick={()=>updateStatus(b.id, 'CANCELLED')}>Hủy</button>
-              </div>
+              
             </div>
-          ))}
+            ))
+          )}
         </div>
       )}
     </div>

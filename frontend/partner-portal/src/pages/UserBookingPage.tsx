@@ -23,12 +23,16 @@ export default function UserBookingPage() {
   // Fallback tag choices nếu BE không gửi options
   const defaultOptions: Record<string, string[]> = {
     establishment_type: ['HOTEL','RESTAURANT'],
-    travel_companion: ['single','couple','family','friends'],
-    style_vibe: ['romantic','quiet','lively','luxury','nature'],
-    amenities_priority: ['Hồ bơi','Spa','Bãi đậu xe','Gym','Buffet sáng','Gần biển'],
-    duration: ['1','2','3','4','5','6','7'],
+    travel_companion: ['single','couple','family','friends','team','business'],
+    style_vibe: ['romantic','quiet','lively','luxury','nature','cozy','modern','classic'],
+    amenities_priority: [
+      'Hồ bơi','Spa','Bãi đậu xe','Gym','Buffet sáng','Gần biển','Wifi','Lễ tân 24/7','Đưa đón sân bay',
+      'Pet-friendly','Phòng gia đình','Không hút thuốc','Bồn tắm','View biển','View thành phố','Gần trung tâm',
+      'Ban công','Cửa sổ','Giặt là','Thang máy'
+    ],
+    duration: ['1','2','3','4','5','6','7','8','9','10'],
     has_balcony: ['yes','no'],
-    num_guests: ['single','couple','3','4','5','6']
+    num_guests: ['single','couple','3','4','5','6','7','8','9','10']
   }
 
   const send = async (override?: { params?: Record<string, any>, prompt?: string, auto?: boolean }) => {
@@ -275,21 +279,48 @@ export default function UserBookingPage() {
     await send({ params: np, prompt: 'Hãy mở rộng tiêu chí giúp mình' })
   }
 
+  const moreSuggestions = async () => {
+    await send({ params: currentParams, prompt: 'Cho mình gợi ý khác', auto: true })
+  }
+
   return (
     <div>
       <h1 className="text-xl font-semibold mb-4">Trợ lý đặt chỗ</h1>
       {/* Chat window */}
-      <div className="rounded border bg-white p-3 min-h-[280px] max-h-[420px] overflow-auto">
-        <div className="space-y-2">
+      <div className="rounded-2xl border bg-white/90 backdrop-blur card p-4 h-[560px] overflow-auto shadow-sm">
+        <div className="space-y-3">
           {messages.map((m,idx)=> (
-            <div key={idx} className={`flex ${m.role==='user'?'justify-end':''}`}>
-              <div className={`${m.role==='user'?'bg-slate-900 text-white':'bg-slate-100 text-slate-900'} px-3 py-2 rounded-2xl max-w-[80%]`}>{m.text}</div>
+            <div key={idx} className={`flex items-end gap-2 ${m.role==='user'?'justify-end':''} chat-anim`}>
+              {m.role==='assistant' && (
+                <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-medium text-slate-700 shrink-0">AI</div>
+              )}
+              <div className={`${m.role==='user'?'bg-slate-900 text-white':'bg-slate-100 text-slate-900'} px-3 py-2 rounded-2xl max-w-[78%] shadow-sm transition-all duration-300`}>{m.text}</div>
+              {m.role==='user' && (
+                <div className="w-7 h-7 rounded-full bg-slate-900 text-white flex items-center justify-center text-[10px] font-medium shrink-0">U</div>
+              )}
             </div>
           ))}
+          {/* Typing indicator */}
+          {loading && (!quiz || !quiz.quiz_completed) && (
+            <div className="flex items-end gap-2 chat-anim">
+              <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-medium text-slate-700 shrink-0">AI</div>
+              <div className="bg-slate-100 text-slate-900 px-3 py-2 rounded-2xl shadow-sm inline-flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.2s]"></span>
+                <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce"></span>
+                <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce [animation-delay:0.2s]"></span>
+              </div>
+            </div>
+          )}
           {/* When a quiz step comes, render choices as chips/images in the chat */}
           {quiz && !quiz.quiz_completed && (
-            <div className="flex">
-              <div className="bg-slate-50 border px-3 py-2 rounded-2xl w-full">
+            <div className="flex items-start gap-2 chat-anim">
+              <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-medium text-slate-700 shrink-0">AI</div>
+              <div className="bg-slate-50 border px-3 py-2 rounded-2xl w-full relative">
+                {/* Heading */}
+                <div className="mb-2">
+                  <div className="text-sm font-medium text-slate-800">{keyLabel(quiz.key_to_collect)}</div>
+                  <div className="text-xs text-slate-500">Chọn một trong các gợi ý bên dưới hoặc nhập thủ công.</div>
+                </div>
                 {/* Options as images */}
                 {quiz.image_options && quiz.image_options.length > 0 && (
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -313,7 +344,7 @@ export default function UserBookingPage() {
                 {!quiz.image_options && quiz.key_to_collect !== 'amenities_priority' && (
                   <div className="flex flex-wrap gap-2">
                     {(quiz.options && quiz.options.length>0 ? quiz.options : (defaultOptions[quiz.key_to_collect as string]||[])).map((o,i)=> (
-                      <button key={i} type="button" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }} className={`px-2 py-1 border rounded-full text-sm ${selectedOpt===o?'bg-slate-900 text-white border-slate-900':'bg-white'}`}>{optionLabel(quiz.key_to_collect as string, o)}</button>
+                      <button key={i} type="button" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }} className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-full text-sm chip shadow-sm ${selectedOpt===o?'bg-slate-900 text-white border-slate-900':'bg-white hover:bg-slate-50'}`}>{optionLabel(quiz.key_to_collect as string, o)}</button>
                     ))}
                   </div>
                 )}
@@ -325,22 +356,21 @@ export default function UserBookingPage() {
                       return (
                         <button key={i} type="button" onClick={()=>{
                           setSelectedAmenities(prev => on ? prev.filter(x=>x!==o) : [...prev, o])
-                        }} className={`px-2 py-1 border rounded-full text-sm ${on?'bg-slate-900 text-white border-slate-900':'bg-white'}`}>{o}</button>
+                        }} className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-full text-sm chip shadow-sm ${on?'bg-slate-900 text-white border-slate-900':'bg-white hover:bg-slate-50'}`}>{o}</button>
                       )
                     })}
                   </div>
                 )}
                 {/* Inputs only for date/price/duration */}
                 {renderInputForKey(quiz.key_to_collect)}
-                <div className="mt-3">
-                  <button className="px-3 py-2 border rounded inline-flex items-center gap-2" onClick={answerAndNext} disabled={loading} title="Gửi">
-                    <PaperAirplaneIcon className="w-4 h-4" />
-                  </button>
-                </div>
+                {/* Submit button pinned bottom-right */}
+                <button className="absolute right-2 bottom-2 h-9 w-9 rounded-full bg-slate-900 text-white flex items-center justify-center hover:brightness-110 transition disabled:opacity-50" onClick={answerAndNext} disabled={loading} title="Gửi">
+                  <PaperAirplaneIcon className="w-4 h-4" />
+                </button>
                 {/* Collected params summary as inline chips */}
-                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                <div className="mt-3 flex flex-wrap gap-2 text-xs pr-12">
                   {Object.entries(currentParams).map(([k,v])=> (
-                    <span key={k} className="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200">{keyLabel(k)}: {String(v)}</span>
+                    <span key={k} className="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 chip shadow-sm">{keyLabel(k)}: {String(v)}</span>
                   ))}
                 </div>
                 {/* Selected thumbnails history */}
@@ -352,6 +382,64 @@ export default function UserBookingPage() {
                   </div>
                 )}
               </div>
+              <div className="w-7 h-7" />
+            </div>
+          )}
+
+          {/* Suggestions as assistant bubble inside chat */}
+          {suggestions && (
+            <div className="flex items-start gap-2 chat-anim">
+              <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-medium text-slate-700 shrink-0">AI</div>
+              <div className="bg-slate-50 border px-3 py-2 rounded-2xl w-full">
+                <div className="text-sm font-medium text-slate-800 mb-2">
+                  {suggestions.length > 0 ? `Mình có ${suggestions.length} gợi ý dành cho bạn:` : 'Chưa tìm thấy kết quả phù hợp.'}
+                </div>
+                {suggestions.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {suggestions.map(s => (
+                      <div key={s.establishmentId + (s.itemType||'')} className="border rounded overflow-hidden bg-white card">
+                        {s.itemImageUrl || s.imageUrlMain ? (
+                          <div className="aspect-video bg-slate-100">
+                            <img src={s.itemImageUrl || s.imageUrlMain!} className="w-full h-full object-cover" />
+                          </div>
+                        ) : null}
+                        <div className="p-3">
+                          <div className="font-medium">{s.establishmentName}</div>
+                          <div className="text-sm text-slate-600">{s.city}</div>
+                          <div className="mt-1 text-sm">Loại: <span className="font-medium">{s.itemType || s.floorArea}</span></div>
+                          <div className="text-sm">Giá: {s.finalPrice?.toLocaleString()} đ</div>
+                          <div className="text-xs text-slate-600">Còn: {s.unitsAvailable}</div>
+                          <div className="mt-2 flex items-center gap-2">
+                            <button className="px-3 py-1 border rounded" onClick={()=>book(s)} disabled={loading}>Book ngay</button>
+                            <a className="px-3 py-1 border rounded" href={`/establishments/${s.establishmentId}`} target="_blank" rel="noreferrer">Xem chi tiết</a>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {suggestions.length > 0 ? (
+                  <div className="mt-3 text-sm">
+                    <div className="text-slate-700 mb-2">Bạn có muốn xem gợi ý khác hoặc tinh chỉnh tiêu chí?</div>
+                    <div className="flex flex-wrap gap-2">
+                      <button className="px-3 py-1.5 border rounded-full" onClick={moreSuggestions}>Gợi ý khác</button>
+                      <button className="px-3 py-1.5 border rounded-full" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</button>
+                      <button className="px-3 py-1.5 border rounded-full" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</button>
+                      <button className="px-3 py-1.5 border rounded-full" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-slate-700">
+                    Hãy nới tiêu chí tìm kiếm một chút nhé:
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</button>
+                      <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</button>
+                      <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('any_style')}>Bất kỳ phong cách</button>
+                      <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -359,16 +447,33 @@ export default function UserBookingPage() {
 
       {/* Input bar: chỉ hiển thị khi chưa vào quiz, hoặc quiz đã hoàn thành */}
       {(!quiz || quiz.quiz_completed) && (
-        <div className="mt-2 flex items-center gap-2">
-          <input className="flex-1 border rounded px-3 py-2" placeholder="Nhập yêu cầu..." value={prompt} onChange={(e)=>setPrompt(e.target.value)} />
-          <button className="px-4 py-2 rounded bg-slate-900 text-white" onClick={()=>send()} disabled={loading}>Gửi</button>
-          {loading && <ArrowPathIcon className="w-4 h-4 animate-spin text-slate-500" />}
-          {msg && <span className="text-green-700">{msg}</span>}
+        <div className="mt-3">
+          <div className="relative">
+            <input
+              className="w-full border rounded-full px-4 py-3 pr-12 shadow-sm"
+              placeholder="Nhập yêu cầu..."
+              value={prompt}
+              onChange={(e)=>setPrompt(e.target.value)}
+              onKeyDown={(e)=>{ if (e.key==='Enter' && !e.shiftKey && !loading) { e.preventDefault(); send() } }}
+            />
+            <button
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full bg-slate-900 text-white flex items-center justify-center hover:brightness-110 transition disabled:opacity-50"
+              onClick={()=>send()}
+              disabled={loading}
+              title="Gửi"
+            >
+              <PaperAirplaneIcon className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            {loading && <ArrowPathIcon className="w-4 h-4 animate-spin text-slate-500" />}
+            {msg && <span className="text-green-700">{msg}</span>}
+          </div>
         </div>
       )}
 
       {quiz && quiz.quiz_completed && (
-        <div className="mt-4 rounded border p-3 bg-white">
+        <div className="mt-4 rounded-2xl border p-3 bg-white">
           <div className="font-medium mb-2">Tham số cuối</div>
           <pre className="text-xs bg-slate-50 p-2 rounded overflow-auto">{JSON.stringify(quiz.final_params, null, 2)}</pre>
           <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
@@ -383,43 +488,7 @@ export default function UserBookingPage() {
         </div>
       )}
 
-      {suggestions && (
-        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-          {suggestions.map(s => (
-            <div key={s.establishmentId + (s.itemType||'')} className="border rounded overflow-hidden bg-white">
-              {s.itemImageUrl || s.imageUrlMain ? (
-                <div className="aspect-video bg-slate-100">
-                  <img src={s.itemImageUrl || s.imageUrlMain!} className="w-full h-full object-cover" />
-                </div>
-              ) : null}
-              <div className="p-3">
-                <div className="font-medium">{s.establishmentName}</div>
-                <div className="text-sm text-slate-600">{s.city}</div>
-                <div className="mt-1 text-sm">Loại: <span className="font-medium">{s.itemType || s.floorArea}</span></div>
-                <div className="text-sm">Giá: {s.finalPrice?.toLocaleString()} đ</div>
-                <div className="text-xs text-slate-600">Còn: {s.unitsAvailable}</div>
-                <div className="mt-2 flex items-center gap-2">
-                  <button className="px-3 py-1 border rounded" onClick={()=>book(s)} disabled={loading}>Book ngay</button>
-                  <a className="px-3 py-1 border rounded" href={`/establishments/${s.establishmentId}`} target="_blank" rel="noreferrer">Xem chi tiết</a>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Zero-result helper */}
-      {suggestions && suggestions.length === 0 && (
-        <div className="mt-3 p-3 border rounded bg-white text-sm">
-          <div className="mb-2 text-slate-700">Không có kết quả khớp. Bạn muốn nới tiêu chí?</div>
-          <div className="flex flex-wrap gap-2">
-            <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</button>
-            <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</button>
-            <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('any_style')}>Bất kỳ phong cách</button>
-            <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</button>
-          </div>
-        </div>
-      )}
+      
     </div>
   )
 }

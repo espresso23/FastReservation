@@ -409,7 +409,7 @@ async def generate_quiz(req: QuizRequest):
             "key_to_collect": None,
             "final_params": final_params
         }
-
+    
     # Sử dụng LangChain JsonOutputParser
     parser = JsonOutputParser(pydantic_object=QuizResponseModel)
 
@@ -421,17 +421,17 @@ async def generate_quiz(req: QuizRequest):
     1. Phân tích 'user_prompt' và 'current_params' để suy luận và cập nhật các tham số có thể.
     2. Sau khi cập nhật, kiểm tra xem còn thiếu tham số nào KHÔNG?
     3. Nếu TẤT CẢ số tham số đã đầy đủ, đặt 'quiz_completed': true và trả về 'final_params'.
-    4. Nếu còn thiếu, xác định tham số còn thiếu ƯU TIÊN nhất (theo thứ tự: {param_order}).
+    4. Nếu còn thiếu, xác định tham số còn thiếu ƯU TIÊN nhất (theo thứ tự: {param_order}). 
     5. Đặt 'quiz_completed': false, 'key_to_collect': tham số thiếu đó, và tạo 'missing_quiz': MỘT câu hỏi ngắn gọn.
     6. Đảm bảo 'max_price' là số nguyên (VND); 'duration' là số nguyên (ngày).
     
     Tham số hiện tại: {current_params}
     Yêu cầu mới nhất của người dùng: "{user_prompt}"
-    
+
     Định dạng đầu ra phải là JSON.
     JSON SCHEMA: {format_instructions}
     """
-
+    
     prompt = ChatPromptTemplate.from_messages([
         ("system", "Bạn là một AI phân tích ngôn ngữ tự nhiên và chuyển đổi ý định người dùng thành các tham số đặt chỗ. Chỉ trả lời bằng JSON."),
         ("human", template)
@@ -480,7 +480,7 @@ async def generate_quiz(req: QuizRequest):
             result['missing_quiz'] = None
             result['options'] = None
             result['image_options'] = None
-
+        
         return result
     except Exception as e:
         logging.error(f"LỖI GỌI LLM/Parser: {e}")
@@ -519,15 +519,15 @@ async def generate_quiz(req: QuizRequest):
 # --- API 2: RAG Search ---
 @app.post("/rag-search", response_model=List[SearchResult])
 async def rag_search(req: SearchRequest):
-    if not vectorstore:
+    if not vectorstore: 
         return []
-
+        
     # Lấy các tham số đã thu thập
     style = req.params.get("style_vibe", "phù hợp")
     companion = req.params.get("travel_companion", "tôi")
     city = req.params.get("city")  # có thể None
     amenities = req.params.get("amenities_priority", "tiện ích cơ bản")
-
+    
     # Tạo Query mô tả chi tiết
     city_text = city or "địa điểm bất kỳ"
     query_text = (
@@ -535,7 +535,7 @@ async def rag_search(req: SearchRequest):
         f"Cần tiện nghi phù hợp cho {companion} và ưu tiên các tiện ích: {amenities}. "
         f"Mô tả không gian và trải nghiệm."
     )
-
+    
     # Truy vấn k lớn hơn; filter city sẽ được hậu kiểm để tránh lệch dấu/biến thể
     search_kwargs = {"k": 30}
     results = vectorstore.similarity_search_with_score(query=query_text, **search_kwargs)
@@ -595,7 +595,7 @@ async def rag_search(req: SearchRequest):
         # 2) Bỏ tất cả hậu kiểm, trả top-N duy nhất
         seen = set()
         uniq = []
-        for doc, score in results:
+    for doc, score in results:
             est_id = (doc.metadata or {}).get('id')
             if not est_id or est_id in seen:
                 continue
@@ -651,7 +651,7 @@ async def add_establishment(req: AddEstablishmentRequest):
     logger.info("/add-establishment called with id=%s", req.id)
     if vectorstore is None or embeddings is None:
         raise HTTPException(status_code=503, detail="Vector Store chưa được khởi tạo (thiếu embeddings/API key).")
-
+    
     # 1. Lấy dữ liệu mới nhất từ PostgreSQL
     new_data = fetch_single_establishment(req.id) 
 

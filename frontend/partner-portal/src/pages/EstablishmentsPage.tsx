@@ -27,7 +27,7 @@ export default function EstablishmentsPage() {
       {!Array.isArray(items) || items.length === 0 ? (
         <div className="text-slate-600">Chưa có cơ sở nào. <Link className="text-blue-600" to="/establishments/new">Thêm cơ sở mới</Link></div>
       ) : (
-        <div className="space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {items.map((e) => (
             <EstablishmentCard key={e.id} item={e} />
           ))}

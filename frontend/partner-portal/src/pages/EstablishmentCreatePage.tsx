@@ -96,14 +96,31 @@ export default function EstablishmentCreatePage() {
         <textarea className="w-full border rounded px-3 py-2" rows={4} placeholder="Mô tả dài"
                   value={form.descriptionLong ?? ''}
                   onChange={(e)=>setForm({...form, descriptionLong:e.target.value})} />
-        <div className="flex items-center gap-3">
-          <label className="font-medium">Ảnh chính</label>
-          <input type="file" accept="image/*" onChange={(e)=>setMainFile(e.target.files?.[0]||null)} />
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <label className="font-medium">Ảnh chính</label>
+            <input type="file" accept="image/*" onChange={(e)=>setMainFile(e.target.files?.[0]||null)} />
+          </div>
+          <div className="rounded overflow-hidden bg-slate-100 w-[320px] h-[180px]">
+            {mainFile && (
+              <img src={URL.createObjectURL(mainFile)} className="w-full h-full object-cover" />
+            )}
+          </div>
+          <div className="text-xs text-slate-500">Khuyến nghị tỉ lệ 16:9 (ví dụ 1280x720) để hiển thị đồng nhất.</div>
         </div>
         <div className="flex items-center gap-3">
           <label className="font-medium">Ảnh phụ</label>
           <input type="file" accept="image/*" multiple onChange={(e)=>setGallery(Array.from(e.target.files||[]))} />
         </div>
+        {gallery.length>0 && (
+          <div className="grid grid-cols-6 gap-2">
+            {gallery.map((f,idx)=>(
+              <div key={idx} className="rounded overflow-hidden w-24 h-24 bg-slate-100">
+                <img src={URL.createObjectURL(f)} className="w-full h-full object-cover" />
+              </div>
+            ))}
+          </div>
+        )}
         {error && <div className="text-red-600 text-sm">{error}</div>}
         <button disabled={loading} className="px-4 py-2 rounded-md bg-slate-900 text-white disabled:opacity-60">{loading?'Đang tạo...':'Tạo cơ sở'}</button>
       </form>
