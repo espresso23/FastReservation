@@ -16,7 +16,6 @@ import tan.fandbaispring.model.*; // Bao gồm Booking, Establishment, User, Inv
 import tan.fandbaispring.repository.*; // Bao gồm các Repository cần thiết
 import tan.fandbaispring.service.AiService;
 import tan.fandbaispring.model.UnitType;
-import tan.fandbaispring.model.UnitCategory;
 import tan.fandbaispring.repository.UnitTypeRepository;
 import tan.fandbaispring.service.AuthService;
 
@@ -47,6 +46,88 @@ public class PartnerController {
         return uploadResult.get("url").toString();
     }
 
+    // --- Hàm Upload với folder theo cơ sở ---
+    private String performUploadForEstablishment(MultipartFile file, String establishmentName, String establishmentAddress, String imageType) throws IOException {
+        // Tạo folder name từ tên và địa chỉ cơ sở
+        String sanitizedName = sanitizeFolderName(establishmentName);
+        String sanitizedAddress = sanitizeFolderName(establishmentAddress);
+        String folderPath = String.format("fast_planner/establishments/%s_%s/%s", 
+                sanitizedName, sanitizedAddress, imageType);
+        
+        @SuppressWarnings("unchecked")
+        Map<String, Object> uploadResult = (Map<String, Object>) cloudinary.uploader().upload(file.getBytes(),
+                ObjectUtils.asMap(
+                    "folder", folderPath,
+                    "public_id", generateUniqueId() // Tạo unique ID để tránh trùng lặp
+                ));
+        return uploadResult.get("url").toString();
+    }
+
+    // --- Hàm sanitize tên folder ---
+    private String sanitizeFolderName(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return "unknown";
+        }
+        return name.trim()
+                .toLowerCase()
+                .replaceAll("[^a-z0-9\\s]", "") // Loại bỏ ký tự đặc biệt
+                .replaceAll("\\s+", "_") // Thay thế khoảng trắng bằng underscore
+                .substring(0, Math.min(20, name.length())); // Giới hạn độ dài
+    }
+
+    // --- Hàm tạo unique ID ---
+    private String generateUniqueId() {
+        return UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+    }
+
+    // --- Hàm xóa ảnh cũ khỏi Cloudinary ---
+    private void deleteOldImages(List<String> oldImageUrls) {
+        if (oldImageUrls == null || oldImageUrls.isEmpty()) {
+            return;
+        }
+        
+        for (String imageUrl : oldImageUrls) {
+            try {
+                // Extract public_id từ URL
+                String publicId = extractPublicIdFromUrl(imageUrl);
+                if (publicId != null && !publicId.isEmpty()) {
+                    cloudinary.uploader().destroy(publicId, ObjectUtils.emptyMap());
+                }
+            } catch (Exception e) {
+                // Log lỗi nhưng không fail request
+                System.err.println("Lỗi xóa ảnh cũ: " + e.getMessage());
+            }
+        }
+    }
+
+    // --- Hàm extract public_id từ Cloudinary URL ---
+    private String extractPublicIdFromUrl(String imageUrl) {
+        if (imageUrl == null || !imageUrl.contains("cloudinary.com")) {
+            return null;
+        }
+        
+        try {
+            // URL format: https://res.cloudinary.com/cloud_name/image/upload/v1234567890/folder/subfolder/filename.jpg
+            String[] parts = imageUrl.split("/upload/");
+            if (parts.length > 1) {
+                String pathPart = parts[1];
+                // Loại bỏ version prefix nếu có
+                if (pathPart.startsWith("v")) {
+                    pathPart = pathPart.substring(pathPart.indexOf("/") + 1);
+                }
+                // Loại bỏ extension
+                int lastDotIndex = pathPart.lastIndexOf(".");
+                if (lastDotIndex > 0) {
+                    pathPart = pathPart.substring(0, lastDotIndex);
+                }
+                return pathPart;
+            }
+        } catch (Exception e) {
+            System.err.println("Lỗi extract public_id: " + e.getMessage());
+        }
+        return null;
+    }
+
     // Đơn giản hóa: Upload file đơn lẻ để FE lấy URL (dùng cho ảnh UnitType/khác)
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> uploadSingle(@RequestPart("file") MultipartFile file,
@@ -57,6 +138,23 @@ public class PartnerController {
         } catch (IOException ex) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("message", "Upload thất bại: " + ex.getMessage()));
+        }
+    }
+
+    // Upload ảnh cho UnitType với folder structure theo cơ sở
+    @PostMapping(value = "/upload/unit-type", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> uploadUnitTypeImage(
+            @RequestPart("file") MultipartFile file,
+            @RequestParam("establishmentName") String establishmentName,
+            @RequestParam("establishmentAddress") String establishmentAddress,
+            @RequestParam(value = "unitTypeName", required = false, defaultValue = "unit") String unitTypeName) {
+        try {
+            String sanitizedUnitType = sanitizeFolderName(unitTypeName);
+            String url = performUploadForEstablishment(file, establishmentName, establishmentAddress, "unit_types/" + sanitizedUnitType);
+            return ResponseEntity.ok(Map.of("url", url));
+        } catch (IOException ex) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Upload ảnh UnitType thất bại: " + ex.getMessage()));
         }
     }
 
@@ -98,13 +196,13 @@ public class PartnerController {
         }
 
         try {
-            // 2. Upload Ảnh Chính và Phụ lên Cloudinary
-            String mainImageUrl = performUpload(mainFile, "main");
+            // 2. Upload Ảnh Chính và Phụ lên Cloudinary với folder structure
+            String mainImageUrl = performUploadForEstablishment(mainFile, req.getName(), req.getAddress(), "main");
             List<String> galleryUrls = galleryFiles.stream()
                     .filter(file -> !file.isEmpty())
                     .map(file -> {
                         try {
-                            return performUpload(file, "gallery");
+                            return performUploadForEstablishment(file, req.getName(), req.getAddress(), "gallery");
                         } catch (IOException e) {
                             throw new RuntimeException("Lỗi upload ảnh phụ: " + e.getMessage());
                         }
@@ -319,5 +417,285 @@ public class PartnerController {
                 .<ResponseEntity<?>>map(ResponseEntity::ok)
                 .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
                         .body(Map.of("message", "Không tìm thấy cơ sở.")));
+    }
+
+    // --- API 7: Cập nhật cơ sở ---
+    @PutMapping(value = "/establishments/{id}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> updateEstablishment(
+            @PathVariable String id,
+            @RequestPart("data") EstablishmentCreationRequest req,
+            @RequestPart(value = "mainFile", required = false) MultipartFile mainFile,
+            @RequestPart(value = "galleryFiles", required = false) List<MultipartFile> galleryFiles) {
+        
+        // 1. Kiểm tra cơ sở tồn tại và quyền sở hữu
+        Optional<Establishment> establishmentOpt = establishmentRepo.findById(id);
+        if (establishmentOpt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("message", "Không tìm thấy cơ sở."));
+        }
+        
+        Establishment establishment = establishmentOpt.get();
+        
+        // Kiểm tra quyền sở hữu
+        if (!establishment.getOwnerId().equals(req.getOwnerId())) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(Map.of("message", "Bạn không có quyền cập nhật cơ sở này."));
+        }
+
+        try {
+            // 2. Cập nhật thông tin cơ bản
+            establishment.setName(req.getName());
+            establishment.setType(EstablishmentType.valueOf(req.getType().toUpperCase()));
+            establishment.setCity(req.getCity());
+            establishment.setAddress(req.getAddress());
+            establishment.setPriceRangeVnd(req.getPriceRangeVnd());
+            establishment.setStarRating(req.getStarRating());
+            establishment.setDescriptionLong(req.getDescriptionLong());
+            establishment.setAmenitiesList(req.getAmenitiesList());
+            establishment.setAvailable(req.isAvailable());
+            establishment.setHasInventory(req.isHasInventory());
+
+            // 3. Xử lý ảnh chính (nếu có)
+            if (mainFile != null && !mainFile.isEmpty()) {
+                // Xóa ảnh cũ trước khi upload ảnh mới
+                if (establishment.getImageUrlMain() != null) {
+                    deleteOldImages(List.of(establishment.getImageUrlMain()));
+                }
+                String mainImageUrl = performUploadForEstablishment(mainFile, req.getName(), req.getAddress(), "main");
+                establishment.setImageUrlMain(mainImageUrl);
+            }
+
+            // 4. Xử lý ảnh gallery (nếu có)
+            if (galleryFiles != null && !galleryFiles.isEmpty()) {
+                // Xóa ảnh gallery cũ trước khi upload ảnh mới
+                if (establishment.getImageUrlsGallery() != null && !establishment.getImageUrlsGallery().isEmpty()) {
+                    deleteOldImages(establishment.getImageUrlsGallery());
+                }
+                List<String> galleryUrls = galleryFiles.stream()
+                        .filter(file -> !file.isEmpty())
+                        .map(file -> {
+                            try {
+                                return performUploadForEstablishment(file, req.getName(), req.getAddress(), "gallery");
+                            } catch (IOException e) {
+                                throw new RuntimeException("Lỗi upload ảnh gallery: " + e.getMessage());
+                            }
+                        })
+                        .collect(Collectors.toList());
+                establishment.setImageUrlsGallery(galleryUrls);
+            }
+
+            // 5. Lưu cơ sở đã cập nhật
+            Establishment saved = establishmentRepo.save(establishment);
+
+            // 6. Cập nhật AI Vector Store
+            try {
+                aiService.updateEstablishmentInVectorStore(id);
+            } catch (Exception e) {
+                // Log lỗi nhưng không fail request
+                System.err.println("Lỗi cập nhật Vector Store: " + e.getMessage());
+            }
+
+            return ResponseEntity.ok(saved);
+
+        } catch (IOException ex) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Lỗi upload ảnh: " + ex.getMessage()));
+        } catch (Exception ex) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Lỗi cập nhật cơ sở: " + ex.getMessage()));
+        }
+    }
+
+    // --- API 8: Xóa cơ sở ---
+    @DeleteMapping("/establishments/{id}")
+    public ResponseEntity<?> deleteEstablishment(
+            @PathVariable String id,
+            @RequestParam String ownerId) {
+        
+        // 1. Kiểm tra cơ sở tồn tại và quyền sở hữu
+        Optional<Establishment> establishmentOpt = establishmentRepo.findById(id);
+        if (establishmentOpt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("message", "Không tìm thấy cơ sở."));
+        }
+        
+        Establishment establishment = establishmentOpt.get();
+        
+        // Kiểm tra quyền sở hữu
+        if (!establishment.getOwnerId().equals(ownerId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(Map.of("message", "Bạn không có quyền xóa cơ sở này."));
+        }
+
+        try {
+            // 2. Kiểm tra có booking nào đang pending/confirmed không
+            List<Booking> activeBookings = bookingRepo.findByEstablishmentIdAndStatusIn(
+                    id, Arrays.asList(BookingStatus.PENDING_PAYMENT, BookingStatus.CONFIRMED));
+            
+            if (!activeBookings.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body(Map.of("message", "Không thể xóa cơ sở có booking đang hoạt động. " +
+                                "Vui lòng hủy tất cả booking trước khi xóa cơ sở."));
+            }
+
+            // 3. Xóa tất cả ảnh khỏi Cloudinary
+            List<String> allImageUrls = new ArrayList<>();
+            if (establishment.getImageUrlMain() != null) {
+                allImageUrls.add(establishment.getImageUrlMain());
+            }
+            if (establishment.getImageUrlsGallery() != null) {
+                allImageUrls.addAll(establishment.getImageUrlsGallery());
+            }
+            
+            // Xóa ảnh của UnitType
+            List<UnitType> unitTypes = unitTypeRepo.findByEstablishmentId(id);
+            for (UnitType unitType : unitTypes) {
+                if (unitType.getImageUrls() != null) {
+                    allImageUrls.addAll(unitType.getImageUrls());
+                }
+            }
+            
+            deleteOldImages(allImageUrls);
+
+            // 4. Xóa các UnitType liên quan
+            unitTypeRepo.deleteAll(unitTypes);
+
+            // 5. Xóa các Inventory liên quan
+            List<Inventory> inventories = inventoryRepo.findByEstablishmentId(id);
+            inventoryRepo.deleteAll(inventories);
+
+            // 6. Xóa cơ sở
+            establishmentRepo.deleteById(id);
+
+            // 6. Cập nhật AI Vector Store (xóa khỏi vector store)
+            try {
+                aiService.removeEstablishmentFromVectorStore(id);
+            } catch (Exception e) {
+                // Log lỗi nhưng không fail request
+                System.err.println("Lỗi xóa khỏi Vector Store: " + e.getMessage());
+            }
+
+            return ResponseEntity.ok(Map.of("message", "Đã xóa cơ sở thành công."));
+
+        } catch (Exception ex) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Lỗi xóa cơ sở: " + ex.getMessage()));
+        }
+    }
+
+    // --- API 9: Cập nhật trạng thái cơ sở (Mở/Đóng) ---
+    @PatchMapping("/establishments/{id}/status")
+    public ResponseEntity<?> updateEstablishmentStatus(
+            @PathVariable String id,
+            @RequestParam String ownerId,
+            @RequestParam boolean isAvailable) {
+        
+        // 1. Kiểm tra cơ sở tồn tại và quyền sở hữu
+        Optional<Establishment> establishmentOpt = establishmentRepo.findById(id);
+        if (establishmentOpt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("message", "Không tìm thấy cơ sở."));
+        }
+        
+        Establishment establishment = establishmentOpt.get();
+        
+        // Kiểm tra quyền sở hữu
+        if (!establishment.getOwnerId().equals(ownerId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(Map.of("message", "Bạn không có quyền cập nhật cơ sở này."));
+        }
+
+        try {
+            // 2. Cập nhật trạng thái
+            establishment.setAvailable(isAvailable);
+            establishmentRepo.save(establishment);
+
+            // 3. Cập nhật AI Vector Store
+            try {
+                aiService.updateEstablishmentInVectorStore(id);
+            } catch (Exception e) {
+                System.err.println("Lỗi cập nhật Vector Store: " + e.getMessage());
+            }
+
+            return ResponseEntity.ok(Map.of(
+                    "message", "Đã cập nhật trạng thái cơ sở thành công.",
+                    "isAvailable", isAvailable
+            ));
+
+        } catch (Exception ex) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Lỗi cập nhật trạng thái: " + ex.getMessage()));
+        }
+    }
+
+    // --- API 10: Lấy thống kê cơ sở ---
+    @GetMapping("/establishments/{id}/stats")
+    public ResponseEntity<?> getEstablishmentStats(@PathVariable String id, @RequestParam String ownerId) {
+        
+        // 1. Kiểm tra cơ sở tồn tại và quyền sở hữu
+        Optional<Establishment> establishmentOpt = establishmentRepo.findById(id);
+        if (establishmentOpt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("message", "Không tìm thấy cơ sở."));
+        }
+        
+        Establishment establishment = establishmentOpt.get();
+        
+        // Kiểm tra quyền sở hữu
+        if (!establishment.getOwnerId().equals(ownerId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(Map.of("message", "Bạn không có quyền xem thống kê cơ sở này."));
+        }
+
+        try {
+            // 2. Thống kê booking
+            List<Booking> allBookings = bookingRepo.findByEstablishmentId(id);
+            long totalBookings = allBookings.size();
+            long confirmedBookings = allBookings.stream()
+                    .filter(b -> b.getStatus() == BookingStatus.CONFIRMED)
+                    .count();
+            long pendingBookings = allBookings.stream()
+                    .filter(b -> b.getStatus() == BookingStatus.PENDING_PAYMENT)
+                    .count();
+            long cancelledBookings = allBookings.stream()
+                    .filter(b -> b.getStatus() == BookingStatus.CANCELLED)
+                    .count();
+
+            // 3. Thống kê UnitType
+            List<UnitType> unitTypes = unitTypeRepo.findByEstablishmentId(id);
+            long totalUnitTypes = unitTypes.size();
+            long activeUnitTypes = unitTypes.stream()
+                    .filter(UnitType::getActive)
+                    .count();
+
+            // 4. Thống kê Inventory
+            List<Inventory> inventories = inventoryRepo.findByEstablishmentId(id);
+            long totalInventoryItems = inventories.size();
+
+            // 5. Doanh thu (tính từ booking confirmed)
+            long totalRevenue = allBookings.stream()
+                    .filter(b -> b.getStatus() == BookingStatus.CONFIRMED)
+                    .mapToLong(Booking::getTotalPriceVnd)
+                    .sum();
+
+            Map<String, Object> stats = new HashMap<>();
+            stats.put("establishmentId", id);
+            stats.put("establishmentName", establishment.getName());
+            stats.put("totalBookings", totalBookings);
+            stats.put("confirmedBookings", confirmedBookings);
+            stats.put("pendingBookings", pendingBookings);
+            stats.put("cancelledBookings", cancelledBookings);
+            stats.put("totalUnitTypes", totalUnitTypes);
+            stats.put("activeUnitTypes", activeUnitTypes);
+            stats.put("totalInventoryItems", totalInventoryItems);
+            stats.put("totalRevenue", totalRevenue);
+            stats.put("isAvailable", establishment.isAvailable());
+
+            return ResponseEntity.ok(stats);
+
+        } catch (Exception ex) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Lỗi lấy thống kê: " + ex.getMessage()));
+        }
     }
 }

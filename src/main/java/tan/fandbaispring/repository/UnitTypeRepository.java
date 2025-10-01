@@ -7,6 +7,7 @@ import java.util.List;
 
 public interface UnitTypeRepository extends JpaRepository<UnitType, Long> {
     List<UnitType> findByEstablishmentIdAndActiveTrue(String establishmentId);
+    List<UnitType> findByEstablishmentId(String establishmentId);
 }
 
 

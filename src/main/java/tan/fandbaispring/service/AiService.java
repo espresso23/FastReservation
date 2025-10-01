@@ -161,4 +161,44 @@ public class AiService {
             processNewEstablishment(establishmentId);
         }
     }
+
+    /**
+     * Cập nhật cơ sở trong Vector Store khi có thay đổi thông tin.
+     * @param establishmentId ID của cơ sở cần cập nhật.
+     */
+    public void updateEstablishmentInVectorStore(String establishmentId) {
+        String url = pythonAiServiceUrl + "/add-establishment";
+
+        // Retry tối đa 3 lần, chờ 500ms giữa các lần
+        int attempts = 0;
+        while (attempts < 3) {
+            try {
+                restTemplate.postForObject(url, Map.of("id", establishmentId), Void.class);
+                return; // thành công
+            } catch (Exception e) {
+                attempts++;
+                if (attempts >= 3) {
+                    System.err.println("LỖI: Không thể cập nhật Vector Store cho ID " + establishmentId +
+                            ". Lần thử: " + attempts + ", lỗi: " + e.getMessage());
+                    return;
+                }
+                try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+            }
+        }
+    }
+
+    /**
+     * Xóa cơ sở khỏi Vector Store.
+     * @param establishmentId ID của cơ sở cần xóa.
+     */
+    public void removeEstablishmentFromVectorStore(String establishmentId) {
+        String url = pythonAiServiceUrl + "/remove-establishment";
+
+        try {
+            restTemplate.postForObject(url, Map.of("id", establishmentId), Void.class);
+        } catch (Exception e) {
+            System.err.println("LỖI: Không thể xóa khỏi Vector Store cho ID " + establishmentId +
+                    ". Lỗi: " + e.getMessage());
+        }
+    }
 }

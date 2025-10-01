@@ -23,4 +23,9 @@ public interface InventoryRepository extends JpaRepository<Inventory, Long> {
             LocalDate date,
             String itemType
     );
+
+    /**
+     * Tìm tất cả inventory của một cơ sở.
+     */
+    List<Inventory> findByEstablishmentId(String establishmentId);
 }

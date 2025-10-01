@@ -700,6 +700,36 @@ async def add_establishment(req: AddEstablishmentRequest):
         logger.error("Error adding to ChromaDB: %s", getattr(e, 'message', str(e)))
         raise HTTPException(status_code=500, detail=f"Lỗi khi thêm vào ChromaDB: {e}")
 
+# --- API 4: Xóa khỏi Vector Store ---
+@app.post("/remove-establishment")
+async def remove_establishment(req: AddEstablishmentRequest):
+    logger.info("/remove-establishment called with id=%s", req.id)
+    if vectorstore is None:
+        raise HTTPException(status_code=503, detail="Vector Store chưa được khởi tạo.")
+    
+    try:
+        # Lấy thông tin trước khi xóa để log
+        before_count = vectorstore._collection.count()  # type: ignore
+        
+        # Xóa document khỏi ChromaDB
+        vectorstore._collection.delete(where={"id": req.id})  # type: ignore
+        
+        after_count = vectorstore._collection.count()  # type: ignore
+        
+        logger.info("Removed from Chroma: id=%s, count before=%s, count after=%s", 
+                   req.id, before_count, after_count)
+        
+        return {
+            "status": "success", 
+            "message": f"Đã xóa establishment {req.id} khỏi Vector Store (OpenAI).",
+            "chroma_count_before": before_count,
+            "chroma_count_after": after_count
+        }
+        
+    except Exception as e:
+        logger.error("Error removing from ChromaDB: %s", getattr(e, 'message', str(e)))
+        raise HTTPException(status_code=500, detail=f"Lỗi khi xóa khỏi ChromaDB: {e}")
+
 # DEBUG: Truy vấn document đã lưu trong Chroma theo establishment id
 @app.get("/debug/vector/{establishment_id}")
 async def debug_vector(establishment_id: str):

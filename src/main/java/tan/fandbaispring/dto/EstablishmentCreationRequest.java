@@ -18,6 +18,9 @@ public class EstablishmentCreationRequest {
 
     // Cờ quan trọng cho quản lý tồn kho
     private boolean hasInventory;
+    
+    // Trạng thái hoạt động của cơ sở
+    private boolean isAvailable;
 
     // Bỏ qua imageUrlMain và imageUrlsGallery vì chúng được xử lý qua Multipart/Cloudinary.
 }
