@@ -110,21 +110,32 @@ PARAM_ORDER = [
     "max_price", "amenities_priority"
 ]
 
+def effective_param_order(final_params: Dict[str, Any]) -> list[str]:
+    try:
+        est_type = (final_params or {}).get("establishment_type")
+        order = list(PARAM_ORDER)
+        if str(est_type).upper() == "RESTAURANT":
+            # Nhà hàng: không hỏi số đêm
+            order = [k for k in order if k != "duration"]
+        return order
+    except Exception:
+        return list(PARAM_ORDER)
+
 FALLBACK_QUESTIONS = {
-    "establishment_type": "Bạn muốn tìm Khách sạn (HOTEL) hay Nhà hàng (RESTAURANT)?",
-    "city": "Bạn muốn đi ở thành phố nào?",
-    "check_in_date": "Bạn dự định ngày bắt đầu chuyến đi là khi nào? (YYYY-MM-DD)",
-    "travel_companion": "Bạn sẽ đi cùng ai? (single, couple, family, friends hoặc nhập số người)",
-    "duration": "Thời lượng chuyến đi bao lâu? (số ngày)",
-    "max_price": "Ngân sách tối đa của bạn là bao nhiêu (VND)?",
-    "amenities_priority": "Bạn ưu tiên tiện ích nào? (ví dụ: hồ bơi, spa, bãi đậu xe)"
+    "establishment_type": "Ban muon tim Khach san (HOTEL) hay Nha hang (RESTAURANT)?",
+    "city": "Ban muon di o thanh pho nao?",
+    "check_in_date": "Ban du dinh ngay bat dau chuyen di la khi nao? (YYYY-MM-DD)",
+    "travel_companion": "Ban se di cung ai? (single, couple, family, friends hoac nhap so nguoi)",
+    "duration": "Thoi luong chuyen di bao lau? (so ngay)",
+    "max_price": "Ngan sach toi da cua ban la bao nhieu (VND)?",
+    "amenities_priority": "Ban uu tien tien ich nao? (vi du: ho boi, spa, bai do xe)"
 }
 
 # Gợi ý lựa chọn cho FE (multiple choice)
 FALLBACK_OPTIONS = {
     "establishment_type": ["HOTEL","RESTAURANT"],
     "travel_companion": ["single", "couple", "family", "friends"],
-    "amenities_priority": ["Hồ bơi", "Spa", "Bãi đậu xe", "Gym", "Buffet sáng", "Gần biển"],
+    "amenities_priority": ["Ho boi", "Spa", "Bai do xe", "Gym", "Buffet sang", "Gan bien"],
     "duration": ["1","2","3","4","5","6","7"],
     "has_balcony": ["yes","no"]
 }
@@ -386,7 +397,8 @@ async def generate_quiz(req: QuizRequest):
         prompt_lc = (req.user_prompt or "").lower()
         if "lãng mạn" in prompt_lc and not final_params.get("amenities_priority"):
             final_params["amenities_priority"] = "romantic"
-        missing = next((k for k in PARAM_ORDER if not final_params.get(k)), None)
+        order = effective_param_order(final_params)
+        missing = next((k for k in order if not final_params.get(k)), None)
         if missing:
             # TẠM THỜI TẮT image_options → FE chỉ hiển thị TAGS/INPUT
             image_opts = None
@@ -486,7 +498,8 @@ async def generate_quiz(req: QuizRequest):
                 result['missing_quiz'] = FALLBACK_QUESTIONS.get('amenities_priority')
 
         # Tự quyết định thiếu gì dựa trên PARAM_ORDER (bỏ qua gợi ý của LLM như style_vibe)
-        missing_key = next((k for k in PARAM_ORDER if not result['final_params'].get(k)), None)
+        ord2 = effective_param_order(result['final_params'])
+        missing_key = next((k for k in ord2 if not result['final_params'].get(k)), None)
         if missing_key:
             result['quiz_completed'] = False
             result['key_to_collect'] = missing_key
@@ -515,7 +528,8 @@ async def generate_quiz(req: QuizRequest):
                 final_params["establishment_type"] = "HOTEL"
             elif any(k in plc for k in ["nha hang","nhà hàng","restaurant"]):
                 final_params["establishment_type"] = "RESTAURANT"
-        missing = next((k for k in PARAM_ORDER if not final_params.get(k)), None)
+        order3 = effective_param_order(final_params)
+        missing = next((k for k in order3 if not final_params.get(k)), None)
         if missing:
             # TẮT image_options khi fallback
             image_opts = None

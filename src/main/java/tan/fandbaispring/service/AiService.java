@@ -47,23 +47,22 @@ public class AiService {
             // Fallback nội bộ khi Python trả 5xx hoặc không khả dụng
             QuizResponseDTO fallback = new QuizResponseDTO();
 
-            // Heuristic nhẹ: nếu prompt có chứa "lãng mạn" thì set style_vibe
+            // Heuristic nhẹ: nếu prompt có chứa "lãng mạn" thì gộp vào amenities_priority
             Map<String, Object> params = request.getCurrentParams() != null
                     ? new java.util.HashMap<>(request.getCurrentParams())
                     : new java.util.HashMap<>();
             String prompt = request.getUserPrompt() != null ? request.getUserPrompt().toLowerCase() : "";
-            if (!params.containsKey("style_vibe") && prompt.contains("lãng mạn")) {
-                params.put("style_vibe", "romantic");
+            if (!params.containsKey("amenities_priority") && prompt.contains("lãng mạn")) {
+                params.put("amenities_priority", "romantic");
             }
 
             String[] order = new String[]{
-                    "city", "check_in_date", "style_vibe", "max_price",
+                    "city", "check_in_date", "max_price",
                     "travel_companion", "duration", "amenities_priority"
             };
             java.util.Map<String, String> questions = java.util.Map.of(
                     "city", "Bạn muốn đi ở thành phố nào?",
                     "check_in_date", "Bạn dự định ngày bắt đầu chuyến đi là khi nào? (YYYY-MM-DD)",
-                    "style_vibe", "Bạn thích phong cách/không khí nào? (ví dụ: lãng mạn, yên tĩnh, sôi động)",
                     "max_price", "Ngân sách tối đa của bạn là bao nhiêu (VND)?",
                     "travel_companion", "Bạn đi cùng ai? (một mình, cặp đôi, gia đình, bạn bè)",
                     "duration", "Thời lượng chuyến đi bao lâu? (số ngày)",
@@ -77,12 +76,27 @@ public class AiService {
                     missing = key;
                     break;
                 }
+                // Cho phép hỏi thêm tiện ích một lần ngay cả khi đã chọn
+                if ("amenities_priority".equals(key)) {
+                    boolean confirmed = Boolean.TRUE.equals(params.get("_amenities_confirmed"));
+                    if (!confirmed && v != null && !String.valueOf(v).isBlank()) {
+                        missing = key; // hỏi thêm lần nữa
+                        // đặt cờ để lần sau không hỏi lại
+                        params.put("_amenities_confirmed", true);
+                        break;
+                    }
+                }
             }
 
             if (missing != null) {
                 fallback.setQuizCompleted(false);
                 fallback.setKeyToCollect(missing);
-                fallback.setMissingQuiz(questions.get(missing));
+                // thay đổi câu hỏi nếu đang ở bước tiện ích và người dùng đã có lựa chọn trước đó
+                if ("amenities_priority".equals(missing) && request.getCurrentParams() != null && request.getCurrentParams().get("amenities_priority") != null) {
+                    fallback.setMissingQuiz("Bạn có muốn chọn thêm tiện ích không? (bạn có thể bỏ qua nếu đủ)");
+                } else {
+                    fallback.setMissingQuiz(questions.get(missing));
+                }
                 fallback.setFinalParams(params);
             } else {
                 fallback.setQuizCompleted(true);

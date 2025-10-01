@@ -247,10 +247,13 @@ export default function UserBookingPage() {
   const renderInputForKey = (k?: string) => {
     if (!k) return null
     if (k === 'check_in_date') return (
-      <input type="date" className="border rounded px-2 py-1" value={customOpt} onChange={(e)=>setCustomOpt(e.target.value)} />
+      <Input type="date" className="h-10" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
     )
     if (k === 'duration' || k === 'max_price' || k === 'num_guests') return (
-      <input type="number" className="border rounded px-2 py-1" value={customOpt} onChange={(e)=>setCustomOpt(e.target.value)} />
+      <Input type="number" className="h-10" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
+    )
+    if (k === 'travel_companion') return (
+      <Input type="text" className="h-10" placeholder="Nhập thủ công (vd: 3 người)" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
     )
     return null
   }
@@ -275,8 +278,13 @@ export default function UserBookingPage() {
       if (!customOpt.trim()) return
       val = customOpt.trim()
     } else {
-      if (!selectedOpt.trim()) return
-      val = selectedOpt.trim()
+      // Cho phép nhập tay cho travel_companion
+      if (k === 'travel_companion' && customOpt.trim()) {
+        val = customOpt.trim()
+      } else {
+        if (!selectedOpt.trim()) return
+        val = selectedOpt.trim()
+      }
     }
 
     const nextParams = { ...currentParams, [k]: k==='duration'||k==='max_price' ? Number(val) : val }
@@ -312,7 +320,7 @@ export default function UserBookingPage() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-white">
+    <div className="h-screen flex flex-col bg-white overflow-hidden">
       {/* Header */}
       <div className="flex-shrink-0 p-6 border-b border-gray-200 bg-white">
         <div className="text-center">
@@ -321,13 +329,13 @@ export default function UserBookingPage() {
         </div>
       </div>
       
-      {/* Chat window - fixed height, no scroll on page */}
-      <div className="flex-1 flex flex-col min-h-0">
-        <Card className="flex-1 m-6 overflow-hidden border border-gray-200">
+      {/* Chat window - fixed height, only this area scrolls */}
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <Card className="flex-1 m-6 overflow-hidden border border-gray-200 shadow-sm">
           <CardContent className="p-0 h-full">
             <div className="h-full overflow-y-auto p-4 space-y-4 bg-gray-50">
             {messages.map((m,idx)=> (
-              <div key={idx} className={`flex items-end gap-3 ${m.role==='user'?'justify-end':''} chat-anim`}>
+              <div key={idx} className={`flex items-end gap-3 ${m.role==='user'?'justify-end':''} transition-all duration-300 ease-out`}>
                 {m.role==='assistant' && (
                   <Avatar className="w-8 h-8 shrink-0">
                     <AvatarFallback className="bg-gray-100 text-gray-600 border border-gray-200">
@@ -335,7 +343,7 @@ export default function UserBookingPage() {
                     </AvatarFallback>
                   </Avatar>
                 )}
-                <div className={`${m.role==='user'?'bg-gray-900 text-white':'bg-white text-gray-900 border border-gray-200'} px-4 py-3 rounded-2xl max-w-[80%] shadow-sm transition-all duration-300`}>
+                <div className={`${m.role==='user'?'bg-gray-900 text-white':'bg-white text-gray-900 border border-gray-200'} px-4 py-3 rounded-2xl max-w-[80%] shadow-sm transition-all duration-300 ease-out`}>
                   {m.text}
                 </div>
                 {m.role==='user' && (
@@ -349,13 +357,13 @@ export default function UserBookingPage() {
             ))}
             {/* Typing indicator */}
             {loading && (!quiz || !quiz.quiz_completed) && (
-              <div className="flex items-end gap-3 chat-anim">
+              <div className="flex items-end gap-3 transition-all duration-300 ease-out">
                 <Avatar className="w-8 h-8 shrink-0">
                   <AvatarFallback className="bg-gray-100 text-gray-600 border border-gray-200">
                     <Bot className="w-4 h-4" />
                   </AvatarFallback>
                 </Avatar>
-                <div className="bg-white text-gray-900 border border-gray-200 px-4 py-3 rounded-2xl shadow-sm inline-flex items-center gap-2">
+                <div className="bg-white text-gray-900 border border-gray-200 px-4 py-3 rounded-2xl shadow-sm inline-flex items-center gap-2 transition-all duration-300 ease-out">
                   <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce [animation-delay:-0.2s]"></span>
                   <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce"></span>
                   <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce [animation-delay:0.2s]"></span>
@@ -364,13 +372,13 @@ export default function UserBookingPage() {
             )}
             {/* When a quiz step comes, render choices as chips/images in the chat */}
             {quiz && !quiz.quiz_completed && (
-              <div className="flex items-start gap-3 chat-anim">
+              <div className="flex items-start gap-3 transition-all duration-300 ease-out">
                 <Avatar className="w-8 h-8 shrink-0">
                   <AvatarFallback className="bg-gray-100 text-gray-600 border border-gray-200">
                     <Bot className="w-4 h-4" />
                   </AvatarFallback>
                 </Avatar>
-                <Card className="w-full border border-gray-200 shadow-sm">
+                <Card className="w-full border border-gray-200 shadow-sm transition-all duration-300 ease-out">
                   <CardContent className="p-4 bg-white">
                     {/* Heading */}
                     <div className="mb-4">
@@ -383,12 +391,12 @@ export default function UserBookingPage() {
                         {quiz.image_options.map((opt,i)=> {
                           const on = selectedImages.some(x=>x.url===opt.image_url)
                           return (
-                          <Button key={i} variant={on ? "default" : "outline"} className="p-0 h-auto flex flex-col border-gray-200" onClick={()=>{
+                          <Button key={i} variant={on ? "default" : "outline"} className="p-0 h-auto flex flex-col border-gray-200 transition-all duration-300 ease-out" onClick={()=>{
                             setSelectedOpt(opt.value); setCustomOpt(opt.value);
                             setSelectedImages(prev => on ? prev.filter(x=>x.url!==opt.image_url) : [...prev, { url: opt.image_url, label: opt.label, params: (opt as any).params }])
                           }}>
                             <div className="aspect-video bg-gray-100 overflow-hidden rounded-t-md">
-                              <img src={opt.image_url} alt={opt.label} className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" />
+                              <img src={opt.image_url} alt={opt.label} className="w-full h-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.02]" />
                             </div>
                             <div className="p-2 text-xs font-medium text-gray-700">{opt.label}</div>
                           </Button>
@@ -400,7 +408,7 @@ export default function UserBookingPage() {
                     {!quiz.image_options && quiz.key_to_collect !== 'amenities_priority' && (
                       <div className="flex flex-wrap gap-2 mb-4">
                         {(quiz.options && quiz.options.length>0 ? quiz.options : (defaultOptions[quiz.key_to_collect as string]||[])).map((o,i)=> (
-                          <Button key={i} variant={selectedOpt===o ? "default" : "outline"} size="sm" className="border-gray-200" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }}>
+                          <Button key={i} variant={selectedOpt===o ? "default" : "outline"} size="sm" className="border-gray-200 transition-all duration-200 ease-out" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }}>
                             {optionLabel(quiz.key_to_collect as string, o)}
                           </Button>
                         ))}
@@ -412,9 +420,16 @@ export default function UserBookingPage() {
                         {((quiz.options && quiz.options.length>0) ? quiz.options : (defaultOptions['amenities_priority']||[])).map((o,i)=> {
                           const on = selectedAmenities.includes(o)
                           return (
-                            <Button key={i} variant={on ? "default" : "outline"} size="sm" className="border-gray-200" onClick={()=>{
-                              setSelectedAmenities(prev => on ? prev.filter(x=>x!==o) : [...prev, o])
-                            }}>
+                            <Button
+                              key={i}
+                              aria-pressed={on}
+                              variant={on ? "default" : "outline"}
+                              size="sm"
+                              className={`${on ? 'ring-2 ring-gray-300 shadow-sm scale-[1.02]' : 'hover:bg-gray-50'} border-gray-200 transition-all duration-200 ease-out active:scale-95`}
+                              onClick={()=>{
+                                setSelectedAmenities(prev => on ? prev.filter(x=>x!==o) : [...prev, o])
+                              }}
+                            >
                               {o}
                             </Button>
                           )
@@ -423,9 +438,16 @@ export default function UserBookingPage() {
                     )}
                 {/* Inputs only for date/price/duration */}
                 {renderInputForKey(quiz.key_to_collect)}
-                    {/* Submit button */}
-                    <div className="flex justify-end">
-                      <Button onClick={answerAndNext} disabled={loading} size="sm" className="bg-gray-900 hover:bg-gray-800 text-white">
+                    {/* Submit / Skip buttons */}
+                    <div className="flex justify-end gap-2">
+                      {quiz.key_to_collect === 'amenities_priority' && (currentParams.amenities_priority || (quiz.missing_quiz && quiz.missing_quiz.includes('chọn thêm')) ) && (
+                        <Button variant="outline" className="border-gray-200 transition-colors duration-200" onClick={()=>{
+                          const np = { ...currentParams, _amenities_confirmed: true }
+                          setCurrentParams(np)
+                          send({ params: np, prompt: 'Bỏ qua chọn thêm tiện ích', auto: true })
+                        }}>Bỏ qua</Button>
+                      )}
+                      <Button onClick={answerAndNext} disabled={loading} size="sm" className="bg-gray-900 hover:bg-gray-800 text-white transition-colors duration-200">
                         <Send className="w-4 h-4 mr-2" />
                         Gửi
                       </Button>
@@ -451,21 +473,21 @@ export default function UserBookingPage() {
               </div>
             )}
 
-          {/* Suggestions as assistant bubble inside chat */}
+          {/* Suggestions as assistant bubble inside chat - show up to 3 cards, responsive */}
           {suggestions && (
-            <div className="flex items-start gap-2 chat-anim">
+            <div className="flex items-start gap-2 transition-all duration-300 ease-out">
               <div className="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center text-[10px] font-medium text-gray-700 shrink-0">AI</div>
               <div className="bg-white border border-gray-200 px-3 py-2 rounded-2xl w-full">
                 <div className="text-sm font-medium text-gray-900 mb-2">
                   {suggestions.length > 0 ? `Mình có ${suggestions.length} gợi ý dành cho bạn:` : 'Chưa tìm thấy kết quả phù hợp.'}
                 </div>
                 {suggestions.length > 0 ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {suggestions.map(s => (
-                      <div key={s.establishmentId + (s.itemType||'')} className="border border-gray-200 rounded overflow-hidden bg-white card shadow-sm">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {suggestions.slice(0,3).map(s => (
+                      <div key={s.establishmentId + (s.itemType||'')} className="border border-gray-200 rounded overflow-hidden bg-white shadow-sm transition-all duration-300 ease-out">
                         {s.itemImageUrl || s.imageUrlMain ? (
-                          <div className="aspect-video bg-gray-100">
-                            <img src={s.itemImageUrl || s.imageUrlMain!} className="w-full h-full object-cover" />
+                          <div className="aspect-video bg-gray-100 overflow-hidden">
+                            <img src={s.itemImageUrl || s.imageUrlMain!} className="w-full h-full object-cover transition-transform duration-300 ease-out hover:scale-[1.02]" />
                           </div>
                         ) : null}
                         <div className="p-3">
@@ -475,8 +497,8 @@ export default function UserBookingPage() {
                           <div className="text-sm text-gray-900">Giá: {s.finalPrice?.toLocaleString()} đ</div>
                           <div className="text-xs text-gray-600">Còn: {s.unitsAvailable}</div>
                           <div className="mt-2 flex items-center gap-2">
-                            <Button size="sm" className="bg-gray-900 hover:bg-gray-800 text-white" onClick={()=>book(s)} disabled={loading}>Book ngay</Button>
-                            <Button size="sm" variant="outline" className="border-gray-200" asChild>
+                            <Button size="sm" className="bg-gray-900 hover:bg-gray-800 text-white transition-colors duration-200" onClick={()=>book(s)} disabled={loading}>Book ngay</Button>
+                            <Button size="sm" variant="outline" className="border-gray-200 transition-colors duration-200" asChild>
                               <a href={`/establishments/${s.establishmentId}`} target="_blank" rel="noreferrer">Xem chi tiết</a>
                             </Button>
                           </div>
@@ -489,19 +511,19 @@ export default function UserBookingPage() {
                   <div className="mt-3 text-sm">
                     <div className="text-gray-700 mb-2">Bạn có muốn xem gợi ý khác hoặc tinh chỉnh tiêu chí?</div>
                     <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" className="border-gray-200" onClick={moreSuggestions}>Gợi ý khác</Button>
-                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</Button>
-                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</Button>
-                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200 transition-colors duration-200" onClick={moreSuggestions}>Gợi ý khác</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200 transition-colors duration-200" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200 transition-colors duration-200" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200 transition-colors duration-200" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</Button>
                     </div>
                   </div>
                 ) : (
                   <div className="text-sm text-gray-700">
                     Hãy nới tiêu chí tìm kiếm một chút nhé:
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</Button>
-                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</Button>
-                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200 transition-colors duration-200" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200 transition-colors duration-200" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200 transition-colors duration-200" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</Button>
                     </div>
                   </div>
                 )}
@@ -511,20 +533,21 @@ export default function UserBookingPage() {
           </div>
         </CardContent>
       </Card>
+      </div>
 
       {/* Input bar: chỉ hiển thị khi chưa vào quiz, hoặc quiz đã hoàn thành */}
       {(!quiz || quiz.quiz_completed) && (
         <div className="flex-shrink-0 p-6 border-t border-gray-200 bg-white">
-          <div className="relative">
+          <div className="relative max-w-3xl mx-auto">
             <Input
-              className="w-full rounded-full px-4 py-3 pr-12 shadow-sm border-gray-200 focus:border-gray-400"
+              className="w-full h-12 rounded-full px-4 pr-14 shadow-sm border-gray-200 focus:border-gray-400"
               placeholder="Nhập yêu cầu của bạn..."
               value={prompt}
               onChange={(e: React.ChangeEvent<HTMLInputElement>)=>setPrompt(e.target.value)}
               onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>)=>{ if (e.key==='Enter' && !e.shiftKey && !loading) { e.preventDefault(); send() } }}
             />
             <Button
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full bg-gray-900 hover:bg-gray-800 text-white"
+              className="absolute right-2 inset-y-0 my-auto h-10 w-10 rounded-full bg-gray-900 hover:bg-gray-800 text-white"
               onClick={()=>send()}
               disabled={loading}
               size="sm"
@@ -558,13 +581,13 @@ export default function UserBookingPage() {
                 />
               </div>
               <div>
-                <Label htmlFor="check_in_date">Ngày check-in</Label>
-                <Input 
-                  id="check_in_date"
-                  type="date" 
-                  value={currentParams.check_in_date||''} 
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>)=>setCurrentParams({ ...currentParams, check_in_date: e.target.value })} 
-                />
+              <Label htmlFor="check_in_date">Ngày check-in</Label>
+              <Input 
+                id="check_in_date"
+                type="date" 
+                value={currentParams.check_in_date||''} 
+                onChange={(e: React.ChangeEvent<HTMLInputElement>)=>setCurrentParams({ ...currentParams, check_in_date: e.target.value })} 
+              />
               </div>
               <div>
                 <Label htmlFor="duration">Số đêm</Label>

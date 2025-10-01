@@ -65,7 +65,7 @@ public class BookingController {
         }
         List<SearchResultDTO> ragResults = aiService.performRagSearch(ragParams);
 
-        // 3. Lọc Post-RAG (Giá + Sao + Số người)
+        // 3. Lọc Post-RAG (Thành phố + Giá + Sao + Số người)
         List<String> establishmentIds = ragResults.stream()
                 .map(SearchResultDTO::getEstablishmentId).collect(Collectors.toList());
 
@@ -98,6 +98,23 @@ public class BookingController {
                 }
             }
         }
+        // Áp dụng lọc theo THÀNH PHỐ mục tiêu (bắt buộc đúng vị trí)
+        String desiredDisplayCity = null;
+        try {
+            Object cityRaw = finalParams.get("city");
+            if (cityRaw != null) {
+                String canonical = canonicalCity(normalize(String.valueOf(cityRaw)));
+                desiredDisplayCity = toDisplayCity(canonical);
+                if (desiredDisplayCity == null || desiredDisplayCity.isBlank()) desiredDisplayCity = String.valueOf(cityRaw);
+            }
+        } catch (Exception ignore) {}
+        if (desiredDisplayCity != null && !desiredDisplayCity.isBlank()) {
+            String want = desiredDisplayCity;
+            establishments = establishments.stream()
+                    .filter(e -> e.getCity() != null && cityMatches(e.getCity(), want))
+                    .toList();
+        }
+
         // Áp dụng lọc theo loại cơ sở nếu có
         if (typeParam != null && !typeParam.isBlank()) {
             String want = typeParam.toUpperCase();
