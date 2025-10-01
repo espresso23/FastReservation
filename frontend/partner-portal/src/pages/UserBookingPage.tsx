@@ -176,6 +176,18 @@ export default function UserBookingPage() {
         // Đồng bộ tham số: ưu tiên paramsToSend (đã infer localCity/localType) rồi merge final_params từ server
         const mergedParams = { ...paramsToSend, ...(res.final_params || {}) }
         setCurrentParams(mergedParams)
+        // FE fallback: nếu đã có amenities nhưng chưa xác nhận, cưỡng chế hỏi 1 lần để tránh bị bỏ qua
+        const needAmenConfirm = !!mergedParams.amenities_priority && !mergedParams._amenities_confirmed && (
+          res.quiz_completed || (res.key_to_collect && res.key_to_collect !== 'amenities_priority')
+        )
+        if (needAmenConfirm) {
+          setQuiz({
+            quiz_completed: false,
+            key_to_collect: 'amenities_priority'
+          } as any)
+          setMessages(prev => [...prev, { role: 'assistant', text: 'Bạn có muốn chọn thêm tiện ích không? (bạn có thể bỏ qua nếu đủ)' }])
+          return
+        }
         // Auto-skip nếu server hỏi lại trường đã có trong mergedParams (giảm hỏi lặp)
         if (!res.quiz_completed && res.key_to_collect) {
           const k = res.key_to_collect as string
@@ -197,7 +209,10 @@ export default function UserBookingPage() {
         setSuggestions(null)
         setSelectedOpt('')
         setCustomOpt('')
-        setSelectedAmenities([])
+        // Không xoá lựa chọn tiện ích tạm thời khi vẫn còn ở bước tiện ích
+        if (res.key_to_collect !== 'amenities_priority') {
+          setSelectedAmenities([])
+        }
         setSelectedImages([])
         if (!res.quiz_completed && res.missing_quiz) {
           setMessages(prev => [...prev, { role: 'assistant', text: res.missing_quiz! }])
@@ -365,11 +380,8 @@ export default function UserBookingPage() {
       }
     }
 
-    // Tạo params kế tiếp; nếu đang ở bước xác nhận tiện ích (gợi ý "chọn thêm"), tự đánh dấu đã xác nhận
+    // Tạo params kế tiếp; KHÔNG tự đặt _amenities_confirmed ở nút Gửi (chỉ đặt khi bấm "Bỏ qua")
     const nextParams = { ...currentParams, [k]: k==='duration'||k==='max_price' ? Number(val) : val }
-    if (k === 'amenities_priority' && (quiz?.missing_quiz || '').toLowerCase().includes('chọn thêm')) {
-      (nextParams as any)._amenities_confirmed = true
-    }
     setCurrentParams(nextParams)
     // Tùy biến câu trả lời hiển thị cho bước ngày: nêu rõ ngày đến và số đêm
     let userText = `Tôi chọn ${keyLabel(k)}: ${humanizeValue(k, val)}`

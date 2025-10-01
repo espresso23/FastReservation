@@ -109,7 +109,8 @@ class QuizResponseModel(BaseModel):
 PARAM_ORDER = [
     "establishment_type",  # HOTEL | RESTAURANT (suy luận từ prompt nếu có)
     "city", "check_in_date", "travel_companion", "duration",
-    "max_price", "amenities_priority"
+    "max_price", "amenities_priority",
+    "_amenities_confirmed"  # cờ xác nhận tiện ích (do FE gửi khi người dùng bấm Bỏ qua)
 ]
 
 def effective_param_order(final_params: Dict[str, Any]) -> list[str]:
@@ -138,8 +139,7 @@ FALLBACK_OPTIONS = {
     "establishment_type": ["HOTEL","RESTAURANT"],
     "travel_companion": ["single", "couple", "family", "friends"],
     "amenities_priority": ["Ho boi", "Spa", "Bai do xe", "Gym", "Buffet sang", "Gan bien"],
-    "duration": ["1","2","3","4","5","6","7"],
-    "has_balcony": ["yes","no"]
+    "duration": ["1","2","3","4","5","6","7"]
 }
 
 
@@ -370,6 +370,16 @@ def normalize_params(final_params: Dict[str, Any], user_prompt: str) -> Dict[str
     brand = detect_brand_name(mixed, city)
     if brand:
         params["brand_name"] = brand
+    # Chuẩn hoá cờ xác nhận tiện ích về boolean
+    if "_amenities_confirmed" in params:
+        try:
+            v = params.get("_amenities_confirmed")
+            if isinstance(v, str):
+                params["_amenities_confirmed"] = v.strip().lower() in ("true", "1", "yes")
+            else:
+                params["_amenities_confirmed"] = bool(v)
+        except Exception:
+            params["_amenities_confirmed"] = False
     # Loại bỏ style_vibe nếu có (không cần nữa)
     if "style_vibe" in params:
         # Chuyển style_vibe vào amenities_priority
@@ -649,13 +659,23 @@ async def generate_quiz(req: QuizRequest):
         # Tự quyết định thiếu gì dựa trên PARAM_ORDER (bỏ qua gợi ý của LLM như style_vibe)
         ord2 = effective_param_order(result['final_params'])
         # Xác định thiếu thực sự (coi như có nếu không rỗng sau chuẩn hoá)
-        missing_key = None
+        missing_key_default = None
         for k in ord2:
             v = result['final_params'].get(k)
             if v is None:
-                missing_key = k; break
+                missing_key_default = k; break
             if isinstance(v, str) and not v.strip():
-                missing_key = k; break
+                missing_key_default = k; break
+        # Cho phép hỏi THÊM tiện ích đúng một lần nếu đã có giá trị nhưng chưa xác nhận
+        missing_key = missing_key_default
+        try:
+            fp = result.get('final_params') or {}
+            has_amen = bool(fp.get('amenities_priority'))
+            amen_confirmed = bool(fp.get('_amenities_confirmed'))
+            if missing_key_default is None and has_amen and not amen_confirmed:
+                missing_key = 'amenities_priority'
+        except Exception:
+            pass
         # Ưu tiên cho phép người dùng CHỌN THÊM tiện ích một lần nữa nếu chưa xác nhận
         try:
             fp = result.get('final_params') or {}
