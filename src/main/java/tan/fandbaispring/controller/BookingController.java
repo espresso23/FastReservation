@@ -129,6 +129,12 @@ public class BookingController {
         List<FinalResultResponse> finalSuggestions = new ArrayList<>();
 
         for (Establishment establishment : establishments) {
+            // Bảo vệ bổ sung: nếu người dùng yêu cầu loại cụ thể, bỏ qua cơ sở không khớp
+            if (typeParam != null && !typeParam.isBlank()) {
+                if (establishment.getType() == null || !establishment.getType().name().equalsIgnoreCase(typeParam)) {
+                    continue;
+                }
+            }
             List<UnitType> types = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishment.getId());
 
                 // Áp dụng các bộ lọc mềm: numGuests (capacity), has_balcony, giá <= maxPrice
@@ -193,7 +199,8 @@ public class BookingController {
             }).toList();
             // Chỉ áp dụng lọc mềm nếu còn kết quả; nếu rỗng thì giữ nguyên danh sách gốc
             if (!filtered.isEmpty()) {
-                finalSuggestions = filtered;
+                // Ensure mutable list (Stream.toList() may be unmodifiable)
+                finalSuggestions = new ArrayList<>(filtered);
             }
         }
 
@@ -218,6 +225,12 @@ public class BookingController {
                 }
             }
             for (Establishment establishment : cityEsts) {
+                // Bảo vệ bổ sung cho nhánh fallback
+                if (typeParam != null && !typeParam.isBlank()) {
+                    if (establishment.getType() == null || !establishment.getType().name().equalsIgnoreCase(typeParam)) {
+                        continue;
+                    }
+                }
                 List<UnitType> types = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishment.getId());
                 Object balconyPref2 = finalParams.get("has_balcony");
                 Boolean wantBalcony2 = null;
@@ -255,10 +268,18 @@ public class BookingController {
             }
         }
         // Bộ lọc bổ sung CUỐI CÙNG theo loại cơ sở (đảm bảo không lẫn loại khác)
-        if (typeParam != null && !typeParam.isBlank() && !allowedEstablishmentIdsByType.isEmpty()) {
+        if (typeParam != null && !typeParam.isBlank()) {
             final java.util.Set<String> allowed = allowedEstablishmentIdsByType;
+            String finalTypeParam = typeParam;
             finalSuggestions = finalSuggestions.stream()
-                    .filter(s -> s.getEstablishmentId() != null && allowed.contains(s.getEstablishmentId()))
+                    .filter(s -> {
+                        if (s.getEstablishmentId() == null) return false;
+                        if (!allowed.isEmpty()) return allowed.contains(s.getEstablishmentId());
+                        // Khi nhánh RAG rỗng và không có allowed set, kiểm tra trực tiếp bằng repo
+                        return establishmentRepo.findById(s.getEstablishmentId())
+                                .map(est -> est.getType() != null && est.getType().name().equalsIgnoreCase(finalTypeParam))
+                                .orElse(false);
+                    })
                     .toList();
         }
 
@@ -273,6 +294,10 @@ public class BookingController {
             }
         } catch (Exception ignore) {}
         final Long budget = maxPrice;
+        // Ensure the list is mutable before sorting (avoid UnsupportedOperationException)
+        if (!(finalSuggestions instanceof java.util.ArrayList)) {
+            finalSuggestions = new ArrayList<>(finalSuggestions);
+        }
         finalSuggestions.sort((a,b)->{
             int scoreA = 0, scoreB = 0;
             // số lượng loại khả dụng

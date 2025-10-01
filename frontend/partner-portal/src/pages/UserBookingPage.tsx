@@ -117,6 +117,24 @@ export default function UserBookingPage() {
         const s = strip(text)
         const durM = s.match(/(\d+)\s*(dem|dems|ngay)/)
         if (durM) out.duration = Number(durM[1])
+        // max_price: support 300k, 0.5tr, 1 trieu, 300.000d, 300000 vnd
+        try {
+          const s2 = text.toLowerCase().replace(/,/g,'.')
+          let price: number | null = null
+          let m1 = s2.match(/(\d+(?:\.\d+)?)\s*(k|nghin|nghìn|ngan|ngàn|tr|trieu|triệu|m)\b/)
+          if (m1) {
+            const val = parseFloat(m1[1])
+            const unit = m1[2]
+            if (['k','nghin','nghìn','ngan','ngàn'].includes(unit)) price = Math.round(val * 1000)
+            else price = Math.round(val * 1000000)
+          } else {
+            let m2 = s2.match(/(\d{1,3}(?:[\.\s]\d{3})+|\d+)\s*(đ|d|vnd)\b/)
+            if (m2) {
+              price = parseInt(m2[1].replace(/\./g,'').replace(/\s/g,''))
+            }
+          }
+          if (price && price>0) out.max_price = price
+        } catch {}
         // amenities and balcony
         const amens: string[] = []
         if (s.includes('gym')) amens.push('Gym')
@@ -162,16 +180,19 @@ export default function UserBookingPage() {
         if (!res.quiz_completed && res.key_to_collect) {
           const k = res.key_to_collect as string
           const val = (mergedParams as any)[k]
-          if (val !== undefined && val !== null && String(val).trim() !== '') {
+          // Đừng auto-skip khi đang ở bước tiện ích và chưa xác nhận xong
+          const awaitingAmenitiesConfirm = (k === 'amenities_priority') && !(mergedParams as any)._amenities_confirmed
+          if (!awaitingAmenitiesConfirm && val !== undefined && val !== null && String(val).trim() !== '') {
             setTimeout(() => { send({ params: mergedParams, prompt: '', auto: true }) }, 0)
             return
           }
           // nếu key đã hỏi trước đó và không có giá trị mới, tránh lặp vô hạn
           if (askedKeys.has(k)) {
-            setTimeout(() => { send({ params: mergedParams, prompt: '', auto: true }) }, 0)
-            return
+            // Đã hỏi rồi mà vẫn thiếu -> dừng auto để người dùng nhập, tránh loop
+            // Không auto gọi lại.
+          } else {
+            setAskedKeys(prev => new Set(prev).add(k))
           }
-          setAskedKeys(prev => new Set(prev).add(k))
         }
         setSuggestions(null)
         setSelectedOpt('')
@@ -294,7 +315,7 @@ export default function UserBookingPage() {
       <Input type="number" className="h-10" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
     )
     if (k === 'travel_companion') return (
-      <Input type="text" className="h-10" placeholder="Nhập thủ công (vd: 3 người)" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
+      <Input type="number" className="h-10" placeholder="Nhập số người (vd: 2)" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
     )
     if (k === 'city') return (
       <Input type="text" className="h-10" placeholder="Nhập tên thành phố (ví dụ: Đà Nẵng)" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
@@ -308,7 +329,20 @@ export default function UserBookingPage() {
     let val = ''
     if (k === 'amenities_priority') {
       if (selectedAmenities.length === 0) return
-      val = selectedAmenities.join(', ')
+      // Merge với các tiện ích đã có để tránh ghi đè (unique, giữ thứ tự: cũ trước, mới sau)
+      const existingRaw = String(currentParams.amenities_priority || '')
+      const existingList = existingRaw
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+      const addList = selectedAmenities.map(s => s.trim()).filter(Boolean)
+      const seen = new Set<string>()
+      const mergedList: string[] = []
+      for (const x of [...existingList, ...addList]) {
+        const key = x.toLowerCase()
+        if (!seen.has(key)) { seen.add(key); mergedList.push(x) }
+      }
+      val = mergedList.join(', ')
     } else if (quiz?.image_options && quiz.image_options.length > 0) {
       // Multi-select images: merge params inferred from selected images
       if (selectedImages.length === 0) return
@@ -331,7 +365,11 @@ export default function UserBookingPage() {
       }
     }
 
+    // Tạo params kế tiếp; nếu đang ở bước xác nhận tiện ích (gợi ý "chọn thêm"), tự đánh dấu đã xác nhận
     const nextParams = { ...currentParams, [k]: k==='duration'||k==='max_price' ? Number(val) : val }
+    if (k === 'amenities_priority' && (quiz?.missing_quiz || '').toLowerCase().includes('chọn thêm')) {
+      (nextParams as any)._amenities_confirmed = true
+    }
     setCurrentParams(nextParams)
     // Tùy biến câu trả lời hiển thị cho bước ngày: nêu rõ ngày đến và số đêm
     let userText = `Tôi chọn ${keyLabel(k)}: ${humanizeValue(k, val)}`
@@ -447,10 +485,45 @@ export default function UserBookingPage() {
                         {(
                           (Array.isArray(quiz.options) && quiz.options.length>0)
                             ? quiz.options
-                            : (quiz.key_to_collect==='travel_companion' ? defaultOptions['travel_companion'] : [])
+                            : (
+                                quiz.key_to_collect==='travel_companion'
+                                  ? defaultOptions['travel_companion']
+                                  : (quiz.key_to_collect==='establishment_type' ? defaultOptions['establishment_type'] : [])
+                              )
                         ).map((o,i)=> (
-                          <Button key={i} variant={selectedOpt===o ? "default" : "outline"} size="sm" className="border-gray-200 transition-all duration-200 ease-out focus-visible:ring-2 focus-visible:ring-gray-300" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }}>
+                          <Button key={i} variant={selectedOpt===o ? "default" : "outline"} size="sm" className="border-gray-200 transition-all duration-200 ease-out focus-visible:ring-2 focus-visible:ring-gray-300" onClick={()=>{ 
+                            setSelectedOpt(o); 
+                            if ((quiz.key_to_collect as string) === 'travel_companion') {
+                              const lc = (o||'').toLowerCase();
+                              const mapped = lc==='single' ? '1' : lc==='couple' ? '2' : o;
+                              setCustomOpt(mapped);
+                            } else {
+                              setCustomOpt(o);
+                            }
+                          }}>
                             {optionLabel(quiz.key_to_collect as string, o)}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                    {/* Quick price chips for max_price */}
+                    {quiz.key_to_collect === 'max_price' && (
+                      <div className="flex flex-wrap gap-2 mb-4">
+                        {[
+                          { label: '100k - 300k', value: 300000 },
+                          { label: '500k - 1 triệu', value: 1000000 },
+                          { label: '1 - 2 triệu', value: 2000000 },
+                          { label: '2 - 3 triệu', value: 3000000 },
+                          { label: '3 - 5 triệu', value: 5000000 }
+                        ].map((p, i) => (
+                          <Button
+                            key={`pr-${i}`}
+                            variant={Number(customOpt)===p.value ? 'default' : 'outline'}
+                            size="sm"
+                            className="border-gray-200"
+                            onClick={() => { setSelectedOpt(String(p.value)); setCustomOpt(String(p.value)); }}
+                          >
+                            {p.label}
                           </Button>
                         ))}
                       </div>

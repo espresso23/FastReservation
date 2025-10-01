@@ -334,6 +334,39 @@ def normalize_params(final_params: Dict[str, Any], user_prompt: str) -> Dict[str
     except Exception:
         # Bỏ qua lỗi parse ngày để không chặn luồng
         pass
+
+    # --- Suy luận ngân sách tối đa (max_price) từ prompt: hỗ trợ 300k, 0.5tr, 1 triệu, 1.2m, 500.000đ, 500k vnd ---
+    try:
+        if not params.get("max_price"):
+            t = (user_prompt or "").lower()
+            # Chuẩn hoá dấu phẩy/chấm
+            t_norm = t.replace(",", ".").replace("đ", " đ ").replace("vnd", " vnd ")
+            # Các mẫu: số + đơn vị (k, nghìn, ngàn, tr, triệu, m) hoặc số có nghìn phân cách + đ/vnd
+            price: Optional[int] = None
+
+            # 1) 1.2tr / 1.2 m / 1,2 triệu / 300k / 250 nghin
+            m = re.search(r"(\d+(?:\.\d+)?)\s*(k|nghin|nghìn|ngan|ngàn|tr|triệu|trieu|m)\b", t_norm)
+            if m:
+                val = float(m.group(1))
+                unit = m.group(2)
+                if unit in ("k", "nghin", "nghìn", "ngan", "ngàn"):
+                    price = int(round(val * 1_000))
+                elif unit in ("tr", "triệu", "trieu", "m"):
+                    price = int(round(val * 1_000_000))
+            else:
+                # 2) 300.000 đ / 300000đ / 300000 vnd
+                m2 = re.search(r"(\d{1,3}(?:[\.\s]\d{3})+|\d+)\s*(đ|vnd)\b", t_norm)
+                if m2:
+                    num_str = m2.group(1).replace(".", "").replace(" ", "")
+                    try:
+                        price = int(num_str)
+                    except Exception:
+                        price = None
+
+            if price and price > 0:
+                params["max_price"] = price
+    except Exception:
+        pass
     brand = detect_brand_name(mixed, city)
     if brand:
         params["brand_name"] = brand
@@ -615,14 +648,33 @@ async def generate_quiz(req: QuizRequest):
 
         # Tự quyết định thiếu gì dựa trên PARAM_ORDER (bỏ qua gợi ý của LLM như style_vibe)
         ord2 = effective_param_order(result['final_params'])
-        missing_key = next((k for k in ord2 if not result['final_params'].get(k)), None)
+        # Xác định thiếu thực sự (coi như có nếu không rỗng sau chuẩn hoá)
+        missing_key = None
+        for k in ord2:
+            v = result['final_params'].get(k)
+            if v is None:
+                missing_key = k; break
+            if isinstance(v, str) and not v.strip():
+                missing_key = k; break
+        # Ưu tiên cho phép người dùng CHỌN THÊM tiện ích một lần nữa nếu chưa xác nhận
+        try:
+            fp = result.get('final_params') or {}
+            has_amen = bool(fp.get('amenities_priority'))
+            amenities_confirmed = bool(fp.get('_amenities_confirmed'))
+            if has_amen and not amenities_confirmed:
+                missing_key = 'amenities_priority'
+        except Exception:
+            pass
         # Nếu người dùng chỉ nêu city nhưng chưa rõ loại cơ sở -> ưu tiên hỏi establishment_type trước
         if missing_key == 'city' and result['final_params'].get('city') and not result['final_params'].get('establishment_type'):
             missing_key = 'establishment_type'
         if missing_key:
             result['quiz_completed'] = False
             result['key_to_collect'] = missing_key
-            result['missing_quiz'] = FALLBACK_QUESTIONS.get(missing_key)
+            if missing_key == 'amenities_priority' and (result.get('final_params') or {}).get('amenities_priority'):
+                result['missing_quiz'] = 'Bạn có muốn chọn thêm tiện ích không? (bạn có thể bỏ qua nếu đủ)'
+            else:
+                result['missing_quiz'] = FALLBACK_QUESTIONS.get(missing_key)
             result['options'] = FALLBACK_OPTIONS.get(missing_key)
             result['image_options'] = None
         else:

@@ -63,7 +63,7 @@ public class AiService {
 
             // Thứ tự câu hỏi mặc định (Hotel). Với Restaurant sẽ bỏ qua 'duration'
             java.util.List<String> orderList = new java.util.ArrayList<>(java.util.Arrays.asList(
-                    "city", "check_in_date", "max_price",
+                     "establishment_type","city", "check_in_date", "max_price",
                     "travel_companion", "duration", "amenities_priority"
             ));
             try {
@@ -72,14 +72,15 @@ public class AiService {
                     orderList.remove("duration");
                 }
             } catch (Exception ignore) {}
-            java.util.Map<String, String> questions = java.util.Map.of(
-                    "city", "Bạn muốn đi ở thành phố nào?",
-                    "check_in_date", "Bạn dự định ngày bắt đầu chuyến đi là khi nào? (YYYY-MM-DD)",
-                    "max_price", "Ngân sách tối đa của bạn là bao nhiêu (VND)?",
-                    "travel_companion", "Bạn đi cùng ai? (một mình, cặp đôi, gia đình, bạn bè)",
-                    "duration", "Thời lượng chuyến đi bao lâu? (số ngày)",
-                    "amenities_priority", "Bạn ưu tiên tiện ích nào? (ví dụ: hồ bơi, spa, bãi đậu xe)"
-            );
+            java.util.Map<String, String> questions = new java.util.HashMap<>();
+            questions.put("establishment_type", "Bạn muốn tìm Khách sạn (HOTEL) hay Nhà hàng (RESTAURANT)?");
+            questions.put("city", "Bạn muốn đi ở thành phố nào?");
+            questions.put("check_in_date", "Bạn dự định ngày bắt đầu chuyến đi là khi nào? (YYYY-MM-DD)");
+            questions.put("max_price", "Ngân sách tối đa của bạn là bao nhiêu (VND)?");
+            questions.put("travel_companion", "Bạn đi cùng ai? (một mình, cặp đôi, gia đình, bạn bè)");
+            questions.put("duration", "Thời lượng chuyến đi bao lâu? (số ngày)");
+            questions.put("amenities_priority", "Bạn ưu tiên tiện ích nào? (ví dụ: hồ bơi, spa, bãi đậu xe)");
+
 
             String missing = null;
             for (String key : orderList) {
@@ -96,9 +97,9 @@ public class AiService {
                 if ("amenities_priority".equals(key)) {
                     boolean confirmed = Boolean.TRUE.equals(params.get("_amenities_confirmed"));
                     if (!confirmed && v != null && !String.valueOf(v).isBlank()) {
-                        missing = key; // hỏi thêm lần nữa
-                        // đặt cờ để lần sau không hỏi lại
-                        params.put("_amenities_confirmed", true);
+                        // Hỏi thêm lần nữa nhưng KHÔNG tự đặt cờ xác nhận.
+                        // Cờ _amenities_confirmed sẽ chỉ được FE gửi lên khi người dùng bấm "Bỏ qua".
+                        missing = key;
                         break;
                     }
                 }

@@ -38,4 +38,10 @@ export async function confirmBooking(payload: any) {
   return res.data
 }
 
+// Xem danh sách booking của một khách hàng
+export async function getUserBookings(userId: number) {
+  const res = await api.get(`/booking/user/view/${userId}`)
+  return Array.isArray(res.data) ? res.data : []
+}
+
 
