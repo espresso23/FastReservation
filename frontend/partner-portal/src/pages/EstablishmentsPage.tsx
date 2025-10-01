@@ -1,17 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { listMyEstablishments } from '../api/partner'
 import type { Establishment } from '../types'
 import EstablishmentCard from '../components/EstablishmentCard'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { Button } from '../components/ui/button'
-import { Card, CardContent, CardDescription, CardTitle } from '../components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Plus, Building2 } from 'lucide-react'
+import { Badge } from '../components/ui/badge'
 
 export default function EstablishmentsPage() {
   const { user } = useAuth()
   const [items, setItems] = useState<Establishment[]>([])
   const [loading, setLoading] = useState(true)
+  const [sortBy, setSortBy] = useState<'latest'|'name'>('latest')
 
   useEffect(() => {
     let mounted = true
@@ -21,6 +23,14 @@ export default function EstablishmentsPage() {
       .finally(() => { if (mounted) setLoading(false) })
     return () => { mounted = false }
   }, [user?.id])
+
+  const sortedItems = useMemo(() => {
+    const arr = [...items]
+    if (sortBy === 'name') {
+      arr.sort((a,b)=> (a.name||'').localeCompare(b.name||''))
+    }
+    return arr
+  }, [items, sortBy])
 
   if (loading) {
     return (
@@ -32,18 +42,30 @@ export default function EstablishmentsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900">Cơ sở của tôi</h1>
-          <p className="text-slate-600 mt-1">Quản lý các cơ sở kinh doanh của bạn</p>
-        </div>
-        <Button asChild>
-          <Link to="/establishments/new">
-            <Plus className="w-4 h-4 mr-2" />
-            Thêm cơ sở mới
-          </Link>
-        </Button>
-      </div>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-2xl">Cơ sở của tôi</CardTitle>
+          <CardDescription>Quản lý các cơ sở kinh doanh của bạn</CardDescription>
+        </CardHeader>
+        <CardContent className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="text-xs">{items.length} cơ sở</Badge>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-slate-600">Sắp xếp</span>
+              <select className="border rounded px-3 py-2 w-40" value={sortBy} onChange={(e)=>setSortBy(e.target.value as any)}>
+                <option value="latest">Mới nhất</option>
+                <option value="name">Theo tên</option>
+              </select>
+            </div>
+          </div>
+          <Button asChild className="focus-visible:ring-2 focus-visible:ring-slate-400">
+            <Link to="/establishments/new">
+              <Plus className="w-4 h-4 mr-2" />
+              Thêm cơ sở mới
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
 
       {!Array.isArray(items) || items.length === 0 ? (
         <Card className="border-dashed">
@@ -63,7 +85,7 @@ export default function EstablishmentsPage() {
         </Card>
       ) : (
         <div className="grid grid-cols-3 gap-6">
-          {items.map((e, index) => (
+          {sortedItems.map((e, index) => (
             <div key={e.id} className="fade-in" style={{ animationDelay: `${index * 0.1}s` }}>
               <EstablishmentCard item={e} />
             </div>

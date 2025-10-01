@@ -10,6 +10,7 @@ import { Badge } from '../components/ui/badge'
 import { Avatar, AvatarFallback } from '../components/ui/avatar'
 import { Label } from '../components/ui/label'
 import { Send, Bot, User, Sparkles } from 'lucide-react'
+// Popover no longer used directly here after switching DatePicker to icon trigger
 
 export default function UserBookingPage() {
   const [prompt, setPrompt] = useState('Tôi muốn đi Đà Nẵng ngày 2025-10-10 2 đêm, có phòng gym')
@@ -27,6 +28,8 @@ export default function UserBookingPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     { role: 'assistant', text: 'Xin chào! Hãy mô tả ngắn gọn nhu cầu đặt chỗ của bạn.' }
   ])
+  // Ghi nhớ các key đã hỏi để giảm hỏi lặp
+  const [askedKeys, setAskedKeys] = useState<Set<string>>(new Set())
 
   // Fallback tag choices nếu BE không gửi options
   const defaultOptions: Record<string, string[]> = {
@@ -153,13 +156,20 @@ export default function UserBookingPage() {
         // Đồng bộ tham số: ưu tiên paramsToSend (đã infer localCity/localType) rồi merge final_params từ server
         const mergedParams = { ...paramsToSend, ...(res.final_params || {}) }
         setCurrentParams(mergedParams)
-        // Auto-skip if server still asks for a field we already inferred locally
+        // Auto-skip nếu server hỏi lại trường đã có trong mergedParams (giảm hỏi lặp)
         if (!res.quiz_completed && res.key_to_collect) {
-          const k = res.key_to_collect
-          if ((k === 'city' && mergedParams.city) || (k === 'establishment_type' && mergedParams.establishment_type)) {
+          const k = res.key_to_collect as string
+          const val = (mergedParams as any)[k]
+          if (val !== undefined && val !== null && String(val).trim() !== '') {
             setTimeout(() => { send({ params: mergedParams, prompt: '', auto: true }) }, 0)
             return
           }
+          // nếu key đã hỏi trước đó và không có giá trị mới, tránh lặp vô hạn
+          if (askedKeys.has(k)) {
+            setTimeout(() => { send({ params: mergedParams, prompt: '', auto: true }) }, 0)
+            return
+          }
+          setAskedKeys(prev => new Set(prev).add(k))
         }
         setSuggestions(null)
         setSelectedOpt('')
@@ -247,9 +257,35 @@ export default function UserBookingPage() {
 
   const renderInputForKey = (k?: string) => {
     if (!k) return null
-    if (k === 'check_in_date') return (
-      <DatePicker value={customOpt? new Date(customOpt): undefined} onChange={(d)=>setCustomOpt(d? d.toISOString().slice(0,10): '')} />
-    )
+    if (k === 'check_in_date') {
+      // Nếu đã có check_in_date thì chọn single; nếu chưa, cho phép chọn range (đến/đi)
+      const hasStart = !!currentParams.check_in_date
+      return (
+        <div className="w-full">
+          <DatePicker
+            value={hasStart && customOpt ? new Date(customOpt) : undefined}
+            onChange={(d:any)=>{
+              if (d && d.from && d.to) {
+                // range được chọn: set check_in_date và duration
+                const from = d.from as Date
+                const to = d.to as Date
+                const isoFrom = new Date(from.getTime()-from.getTimezoneOffset()*60000).toISOString().slice(0,10)
+                const dayMs = 24*60*60*1000
+                const nights = Math.max(1, Math.round((to.getTime()-from.getTime())/dayMs))
+                setCustomOpt(isoFrom)
+                setCurrentParams(prev => ({ ...prev, check_in_date: isoFrom, duration: nights }))
+              } else if (d instanceof Date) {
+                const iso = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10)
+                setCustomOpt(iso)
+              }
+            }}
+            trigger="icon"
+            ariaLabel="Chọn ngày"
+            range={!hasStart}
+          />
+        </div>
+      )
+    }
     if (k === 'duration' || k === 'max_price' || k === 'num_guests') return (
       <Input type="number" className="h-10" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
     )
@@ -337,7 +373,7 @@ export default function UserBookingPage() {
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         <Card className="flex-1 m-6 overflow-hidden border border-gray-200 shadow-sm">
           <CardContent className="p-0 h-full">
-            <div className="h-full overflow-y-auto p-4 space-y-4 bg-gray-50">
+            <div className="h-full overflow-y-auto p-4 space-y-4 bg-gray-50" aria-live="polite" aria-relevant="additions" role="log">
             {messages.map((m,idx)=> (
               <div key={idx} className={`flex items-end gap-3 ${m.role==='user'?'justify-end':''} transition-all duration-300 ease-out`}>
                 {m.role==='assistant' && (
@@ -394,9 +430,14 @@ export default function UserBookingPage() {
                       </div>
                     )}
                     {/* Options as selectable chips (single-select) */}
+                    {/* Chỉ hiển thị chips khi BE cung cấp options rõ ràng hoặc key travel_companion (có preset) */}
                     {!quiz.image_options && quiz.key_to_collect !== 'amenities_priority' && (
                       <div className="flex flex-wrap gap-2 mb-4">
-                        {(quiz.options && quiz.options.length>0 ? quiz.options : (defaultOptions[quiz.key_to_collect as string]||[])).map((o,i)=> (
+                        {(
+                          (Array.isArray(quiz.options) && quiz.options.length>0)
+                            ? quiz.options
+                            : (quiz.key_to_collect==='travel_companion' ? defaultOptions['travel_companion'] : [])
+                        ).map((o,i)=> (
                           <Button key={i} variant={selectedOpt===o ? "default" : "outline"} size="sm" className="border-gray-200 transition-all duration-200 ease-out focus-visible:ring-2 focus-visible:ring-gray-300" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }}>
                             {optionLabel(quiz.key_to_collect as string, o)}
                           </Button>
@@ -488,13 +529,13 @@ export default function UserBookingPage() {
                 {suggestions.length > 0 ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                     {suggestions.slice(0,3).map(s => (
-                      <div key={s.establishmentId + (s.itemType||'')} className="border border-gray-200 rounded overflow-hidden bg-white shadow-sm transition-all duration-300 ease-out">
+                      <Card key={s.establishmentId + (s.itemType||'')} className="overflow-hidden border border-gray-200 shadow-sm transition-all duration-300 ease-out">
                         {s.itemImageUrl || s.imageUrlMain ? (
                           <div className="aspect-video bg-gray-100 overflow-hidden">
-                            <img src={s.itemImageUrl || s.imageUrlMain!} className="w-full h-full object-cover transition-transform duration-300 ease-out hover:scale-[1.02]" />
+                            <img src={s.itemImageUrl || s.imageUrlMain!} alt={s.establishmentName} className="w-full h-full object-cover transition-transform duration-300 ease-out hover:scale-[1.02]" />
                           </div>
                         ) : null}
-                        <div className="p-3">
+                        <CardContent className="p-3">
                           <div className="font-medium text-gray-900">{s.establishmentName}</div>
                           <div className="text-sm text-gray-600">{s.city}</div>
                           <div className="mt-1 text-sm text-gray-700">Loại: <span className="font-medium">{s.itemType || s.floorArea}</span></div>
@@ -506,8 +547,8 @@ export default function UserBookingPage() {
                               <a href={`/establishments/${s.establishmentId}`} target="_blank" rel="noreferrer">Xem chi tiết</a>
                             </Button>
                           </div>
-                        </div>
-                      </div>
+                        </CardContent>
+                      </Card>
                     ))}
                   </div>
                 ) : null}
@@ -589,7 +630,11 @@ export default function UserBookingPage() {
               <DatePicker
                   id="check_in_date"
                 value={currentParams.check_in_date ? new Date(currentParams.check_in_date) : undefined}
-                onChange={(d)=>setCurrentParams({ ...currentParams, check_in_date: d ? d.toISOString().slice(0,10) : '' })}
+                range={false}
+                onChange={(d)=>{
+                  const dd = d as Date | undefined
+                  setCurrentParams({ ...currentParams, check_in_date: dd ? dd.toISOString().slice(0,10) : '' })
+                }}
                 />
               </div>
               <div>

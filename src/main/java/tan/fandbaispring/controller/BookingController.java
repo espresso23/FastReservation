@@ -4,11 +4,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import tan.fandbaispring.dto.*; // Bao gồm FinalResultResponse, InventoryUpdateRequest, v.v.
+import tan.fandbaispring.dto.*;
 import tan.fandbaispring.model.*;
 import tan.fandbaispring.repository.BookingRepository;
 import tan.fandbaispring.repository.EstablishmentRepository;
-import tan.fandbaispring.repository.InventoryRepository; // Cần thêm
 import tan.fandbaispring.repository.UserRepository;
 import tan.fandbaispring.service.AiService;
 import tan.fandbaispring.model.UnitType;
@@ -33,7 +32,6 @@ public class BookingController {
     @Autowired private EstablishmentRepository establishmentRepo;
     @Autowired private BookingRepository bookingRepo;
     @Autowired private UserRepository userRepository;
-    @Autowired private InventoryRepository inventoryRepo; // *** Đã thêm ***
     @Autowired private UnitTypeRepository unitTypeRepo;
     @Autowired private UnitAvailabilityRepository unitAvailRepo;
 
@@ -124,109 +122,58 @@ public class BookingController {
                     .toList();
         }
 
-        // 4. KIỂM TRA TỒN KHO (INVENTORY CHECK) và Chuẩn bị FinalResponse (xếp hạng lai)
         List<FinalResultResponse> finalSuggestions = new ArrayList<>();
 
         for (Establishment establishment : establishments) {
-            // Ưu tiên dùng Inventory nếu ngày đó có dữ liệu; nếu rỗng, fallback UnitType
-            List<Inventory> availableItems = inventoryRepo.findByEstablishmentIdAndDate(establishment.getId(), bookingDate);
-            // Lọc theo giá tối đa nếu có price
-            availableItems = availableItems.stream()
-                    .filter(i -> i.getPrice() == null || i.getPrice() <= maxPrice)
-                    .toList();
-            // Lọc theo sở thích có ban công nếu người dùng đưa vào
-            Object balconyPref = finalParams.get("has_balcony");
-            if (balconyPref != null) {
-                boolean wantBalcony = String.valueOf(balconyPref).equalsIgnoreCase("yes")
-                        || String.valueOf(balconyPref).equalsIgnoreCase("true");
-                availableItems = availableItems.stream()
-                        .filter(i -> i.getHasBalcony() != null && i.getHasBalcony() == wantBalcony)
-                        .toList();
-            }
-
-            if (!availableItems.isEmpty()) {
-                // Lấy UnitType để kiểm tra capacity mapping theo itemType
-                List<UnitType> typesForEst = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishment.getId());
-
-                for (Inventory item : availableItems) {
-                    int unitsAvailable = item.getTotalUnits() - item.getUnitsBooked();
-                    if (unitsAvailable <= 0) continue;
-
-                    // Kiểm tra sức chứa nếu người dùng đã nhập số người
-                    if (numGuests != null && numGuests > 0) {
-                        boolean capacityOk = true; // qua nếu không tìm thấy mapping
-                        for (UnitType t : typesForEst) {
-                            String tName = t.getName() != null ? t.getName() : "";
-                            String tCode = t.getCode() != null ? t.getCode() : "";
-                            String it = item.getItemType() != null ? item.getItemType() : "";
-                            if (it.equalsIgnoreCase(tName) || it.equalsIgnoreCase(tCode)) {
-                                if (t.getCapacity() != null && t.getCapacity() > 0 && t.getCapacity() < numGuests) {
-                                    capacityOk = false;
-                                }
-                                break;
-                            }
-                        }
-                        if (!capacityOk) continue;
-                    }
-
-                    FinalResultResponse dto = new FinalResultResponse();
-                    // Gán dữ liệu Establishment
-                    dto.setEstablishmentId(establishment.getId());
-                    dto.setEstablishmentName(establishment.getName());
-                    dto.setCity(establishment.getCity());
-                    dto.setStarRating(establishment.getStarRating());
-                    dto.setImageUrlMain(establishment.getImageUrlMain());
-                    dto.setImageUrlsGallery(establishment.getImageUrlsGallery());
-
-                    // Gán dữ liệu Inventory (Chi tiết phòng/bàn)
-                    dto.setItemType(item.getItemType());
-                    dto.setFloorArea(item.getFloorArea());
-                    dto.setUnitsAvailable(unitsAvailable);
-                    dto.setFinalPrice(item.getPrice());
-                    dto.setItemImageUrl(item.getItemImageUrl());
-
-                    finalSuggestions.add(dto);
-                }
-            } else {
-                // Fallback: cơ sở không có inventory ngày đó -> gợi ý theo UnitType
-                List<UnitType> types = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishment.getId());
+            List<UnitType> types = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishment.getId());
 
                 // Áp dụng các bộ lọc mềm: numGuests (capacity), has_balcony, giá <= maxPrice
                 Boolean wantBalcony = null;
+                Object balconyPref = finalParams.get("has_balcony");
                 if (balconyPref != null) {
                     wantBalcony = String.valueOf(balconyPref).equalsIgnoreCase("yes")
                             || String.valueOf(balconyPref).equalsIgnoreCase("true");
                 }
 
-                for (UnitType t : types) {
-                    // Lọc sức chứa
-                    if (numGuests != null && t.getCapacity() != null && t.getCapacity() > 0 && t.getCapacity() < numGuests) {
-                        continue;
-                    }
-                    // Lọc ban công
-                    if (wantBalcony != null && t.getHasBalcony() != null && !t.getHasBalcony().equals(wantBalcony)) {
-                        continue;
-                    }
-                    // Lọc theo giá
-                    Long base = t.getBasePrice();
-                    if (base != null && base > maxPrice) {
-                        continue;
-                    }
-
-                    FinalResultResponse dto = new FinalResultResponse();
-                    dto.setEstablishmentId(establishment.getId());
-                    dto.setEstablishmentName(establishment.getName());
-                    dto.setCity(establishment.getCity());
-                    dto.setStarRating(establishment.getStarRating());
-                    dto.setImageUrlMain(establishment.getImageUrlMain());
-                    dto.setImageUrlsGallery(establishment.getImageUrlsGallery());
-
-                    dto.setItemType(t.getName() != null ? t.getName() : t.getCode());
-                    dto.setUnitsAvailable(t.getTotalUnits() != null && t.getTotalUnits() > 0 ? t.getTotalUnits() : 9999);
-                    dto.setFinalPrice(base);
-                    // Không có ảnh riêng của type trong model -> giữ ảnh cơ sở
-                    finalSuggestions.add(dto);
+            for (UnitType t : types) {
+                // Lọc sức chứa
+                if (numGuests != null && t.getCapacity() != null && t.getCapacity() > 0 && t.getCapacity() < numGuests) {
+                    continue;
                 }
+                // Lọc ban công
+                if (wantBalcony != null && t.getHasBalcony() != null && !t.getHasBalcony().equals(wantBalcony)) {
+                    continue;
+                }
+                // Lọc theo giá
+                Long base = t.getBasePrice();
+                if (base != null && base > maxPrice) {
+                    continue;
+                }
+
+                FinalResultResponse dto = new FinalResultResponse();
+                dto.setEstablishmentId(establishment.getId());
+                dto.setEstablishmentName(establishment.getName());
+                dto.setCity(establishment.getCity());
+                dto.setStarRating(establishment.getStarRating());
+                dto.setImageUrlMain(establishment.getImageUrlMain());
+                dto.setImageUrlsGallery(establishment.getImageUrlsGallery());
+
+                dto.setItemType(t.getName() != null ? t.getName() : t.getCode());
+                int total = (t.getTotalUnits()!=null && t.getTotalUnits()>0) ? t.getTotalUnits() : 9999;
+                int overlaps = (int) bookingRepo.findByPartnerId(establishment.getOwnerId()).stream()
+                        .filter(b -> b.getEstablishmentId()!=null && b.getEstablishmentId().equals(establishment.getId()))
+                        .filter(b -> b.getStartDate()!=null && b.getStartDate().equals(bookingDate))
+                        .filter(b -> {
+                            String it = b.getBookedItemType();
+                            String name = t.getName()!=null ? t.getName() : "";
+                            String code = t.getCode()!=null ? t.getCode() : "";
+                            return it!=null && (it.equalsIgnoreCase(name) || it.equalsIgnoreCase(code));
+                        })
+                        .count();
+                dto.setUnitsAvailable(Math.max(0, total - overlaps));
+                dto.setFinalPrice(base);
+                // Không có ảnh riêng của type trong model -> giữ ảnh cơ sở
+                finalSuggestions.add(dto);
             }
         }
         // Nếu có số lượng khách, ưu tiên các loại/đề xuất phù hợp (lọc mềm theo tên/loại có chứa từ khóa)
@@ -246,7 +193,7 @@ public class BookingController {
             }
         }
 
-        // Fallback cuối: nếu vẫn rỗng, duyệt toàn bộ cơ sở theo city (alias) và áp logic availability/UnitType
+        // Fallback cuối: nếu vẫn rỗng, duyệt toàn bộ cơ sở theo city (alias) và áp logic UnitType
         if (finalSuggestions.isEmpty()) {
             String cityFilter = finalParams.get("city") != null ? String.valueOf(finalParams.get("city")) : null;
             List<Establishment> cityEsts = new ArrayList<>();
@@ -263,81 +210,43 @@ public class BookingController {
                         .toList();
             }
             for (Establishment establishment : cityEsts) {
-                if (Boolean.TRUE.equals(establishment.getHasInventory())) {
-                    List<Inventory> availableItems = inventoryRepo.findByEstablishmentIdAndDate(establishment.getId(), bookingDate);
-                    availableItems = availableItems.stream()
-                            .filter(i -> i.getPrice() == null || i.getPrice() <= maxPrice)
-                            .toList();
-                    Object balconyPref = finalParams.get("has_balcony");
-                    if (balconyPref != null) {
-                        boolean wantBalcony = String.valueOf(balconyPref).equalsIgnoreCase("yes")
-                                || String.valueOf(balconyPref).equalsIgnoreCase("true");
-                        availableItems = availableItems.stream()
-                                .filter(i -> i.getHasBalcony() != null && i.getHasBalcony() == wantBalcony)
-                                .toList();
-                    }
-                    List<UnitType> typesForEst = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishment.getId());
-                    for (Inventory item : availableItems) {
-                        int unitsAvailable = item.getTotalUnits() - item.getUnitsBooked();
-                        if (unitsAvailable <= 0) continue;
-                        if (numGuests != null && numGuests > 0) {
-                            boolean capacityOk = true;
-                            for (UnitType t : typesForEst) {
-                                String tName = t.getName() != null ? t.getName() : "";
-                                String tCode = t.getCode() != null ? t.getCode() : "";
-                                String it = item.getItemType() != null ? item.getItemType() : "";
-                                if (it.equalsIgnoreCase(tName) || it.equalsIgnoreCase(tCode)) {
-                                    if (t.getCapacity() != null && t.getCapacity() > 0 && t.getCapacity() < numGuests) {
-                                        capacityOk = false;
-                                    }
-                                    break;
-                                }
-                            }
-                            if (!capacityOk) continue;
-                        }
-                        FinalResultResponse dto = new FinalResultResponse();
-                        dto.setEstablishmentId(establishment.getId());
-                        dto.setEstablishmentName(establishment.getName());
-                        dto.setCity(establishment.getCity());
-                        dto.setStarRating(establishment.getStarRating());
-                        dto.setImageUrlMain(establishment.getImageUrlMain());
-                        dto.setImageUrlsGallery(establishment.getImageUrlsGallery());
-                        dto.setItemType(item.getItemType());
-                        dto.setFloorArea(item.getFloorArea());
-                        dto.setUnitsAvailable(unitsAvailable);
-                        dto.setFinalPrice(item.getPrice());
-                        dto.setItemImageUrl(item.getItemImageUrl());
-                        finalSuggestions.add(dto);
-                    }
-                } else {
-                    List<UnitType> types = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishment.getId());
-                    Object balconyPref = finalParams.get("has_balcony");
-                    Boolean wantBalcony = null;
-                    if (balconyPref != null) {
-                        wantBalcony = String.valueOf(balconyPref).equalsIgnoreCase("yes")
-                                || String.valueOf(balconyPref).equalsIgnoreCase("true");
-                    }
-                    for (UnitType t : types) {
-                        if (numGuests != null && t.getCapacity() != null && t.getCapacity() > 0 && t.getCapacity() < numGuests) continue;
-                        if (wantBalcony != null && t.getHasBalcony() != null && !t.getHasBalcony().equals(wantBalcony)) continue;
-                        Long base = t.getBasePrice();
-                        if (base != null && base > maxPrice) continue;
-                        FinalResultResponse dto = new FinalResultResponse();
-                        dto.setEstablishmentId(establishment.getId());
-                        dto.setEstablishmentName(establishment.getName());
-                        dto.setCity(establishment.getCity());
-                        dto.setStarRating(establishment.getStarRating());
-                        dto.setImageUrlMain(establishment.getImageUrlMain());
-                        dto.setImageUrlsGallery(establishment.getImageUrlsGallery());
-                        dto.setItemType(t.getName() != null ? t.getName() : t.getCode());
-                        dto.setUnitsAvailable(t.getTotalUnits() != null && t.getTotalUnits() > 0 ? t.getTotalUnits() : 9999);
-                        dto.setFinalPrice(base);
-                        finalSuggestions.add(dto);
-                    }
+                List<UnitType> types = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishment.getId());
+                Object balconyPref2 = finalParams.get("has_balcony");
+                Boolean wantBalcony2 = null;
+                if (balconyPref2 != null) {
+                    wantBalcony2 = String.valueOf(balconyPref2).equalsIgnoreCase("yes") || String.valueOf(balconyPref2).equalsIgnoreCase("true");
+                }
+                for (UnitType t : types) {
+                    if (numGuests != null && t.getCapacity() != null && t.getCapacity() > 0 && t.getCapacity() < numGuests) continue;
+                    if (wantBalcony2 != null && t.getHasBalcony() != null && !t.getHasBalcony().equals(wantBalcony2)) continue;
+                    Long base = t.getBasePrice();
+                    if (base != null && base > maxPrice) continue;
+                    FinalResultResponse dto = new FinalResultResponse();
+                    dto.setEstablishmentId(establishment.getId());
+                    dto.setEstablishmentName(establishment.getName());
+                    dto.setCity(establishment.getCity());
+                    dto.setStarRating(establishment.getStarRating());
+                    dto.setImageUrlMain(establishment.getImageUrlMain());
+                    dto.setImageUrlsGallery(establishment.getImageUrlsGallery());
+                    dto.setItemType(t.getName() != null ? t.getName() : t.getCode());
+                    int total2 = (t.getTotalUnits()!=null && t.getTotalUnits()>0) ? t.getTotalUnits() : 9999;
+                    int overlaps2 = (int) bookingRepo.findByPartnerId(establishment.getOwnerId()).stream()
+                            .filter(b -> b.getEstablishmentId()!=null && b.getEstablishmentId().equals(establishment.getId()))
+                            .filter(b -> b.getStartDate()!=null && b.getStartDate().equals(bookingDate))
+                            .filter(b -> {
+                                String it = b.getBookedItemType();
+                                String name = t.getName()!=null ? t.getName() : "";
+                                String code = t.getCode()!=null ? t.getCode() : "";
+                                return it!=null && (it.equalsIgnoreCase(name) || it.equalsIgnoreCase(code));
+                            })
+                            .count();
+                    dto.setUnitsAvailable(Math.max(0, total2 - overlaps2));
+                    dto.setFinalPrice(base);
+                    finalSuggestions.add(dto);
                 }
             }
         }
-        // Xếp hạng lai: ưu tiên tồn kho, giá trong ngân sách, khớp tiện ích (nếu có)
+        // Xếp hạng lai: ưu tiên còn chỗ theo booking, giá trong ngân sách, khớp tiện ích (nếu có)
         final List<String> amenNeed = new ArrayList<>();
         try {
             Object am = finalParams.get("amenities_priority");
@@ -350,7 +259,7 @@ public class BookingController {
         final Long budget = maxPrice;
         finalSuggestions.sort((a,b)->{
             int scoreA = 0, scoreB = 0;
-            // inventory available
+            // số lượng loại khả dụng
             scoreA += a.getUnitsAvailable()>0 ? 3 : 0;
             scoreB += b.getUnitsAvailable()>0 ? 3 : 0;
             // price within budget
@@ -479,31 +388,7 @@ public class BookingController {
             @RequestParam String date
     ) {
         LocalDate bookingDate = LocalDate.parse(date);
-        List<Inventory> items = inventoryRepo.findByEstablishmentIdAndDate(establishmentId, bookingDate);
         List<FinalResultResponse> results = new ArrayList<>();
-
-        if (!items.isEmpty()) {
-            for (Inventory item : items) {
-                int unitsAvailable = item.getTotalUnits() - item.getUnitsBooked();
-                if (unitsAvailable <= 0) continue;
-                FinalResultResponse dto = new FinalResultResponse();
-                dto.setEstablishmentId(establishmentId);
-                establishmentRepo.findById(establishmentId).ifPresent(est -> {
-                    dto.setEstablishmentName(est.getName());
-                    dto.setCity(est.getCity());
-                    dto.setStarRating(est.getStarRating());
-                    dto.setImageUrlMain(est.getImageUrlMain());
-                    dto.setImageUrlsGallery(est.getImageUrlsGallery());
-                });
-                dto.setItemType(item.getItemType());
-                dto.setFloorArea(item.getFloorArea());
-                dto.setUnitsAvailable(unitsAvailable);
-                dto.setFinalPrice(item.getPrice());
-                dto.setItemImageUrl(item.getItemImageUrl());
-                results.add(dto);
-            }
-            return ResponseEntity.ok(results);
-        }
 
         // Fallback: nếu chưa cấu hình inventory theo ngày, trả theo UnitType (dùng basePrice và totalUnits)
         List<UnitType> types = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishmentId);
@@ -610,12 +495,10 @@ public class BookingController {
         newBooking.setPartnerId(estOpt.get().getOwnerId()); // Lấy Owner ID từ Establishment
         newBooking.setStartDate(req.getStartDate());
         newBooking.setDuration(req.getDuration());
-        // Tính giá theo LOẠI PHÒNG/BÀN: đơn giá từ Inventory x số đêm
+        // Tính giá theo UnitType.basePrice x số đêm
         Long computedTotal = req.getTotalPriceVnd();
         try {
-            Optional<Inventory> invOptForPrice = inventoryRepo.findByEstablishmentIdAndDateAndItemType(
-                    req.getEstablishmentId(), req.getStartDate(), req.getBookedItemType());
-            long base = invOptForPrice.map(i -> i.getPrice() != null ? i.getPrice() : 0L).orElse(0L);
+            long base = matchedType.getBasePrice() != null ? matchedType.getBasePrice() : 0L;
             int nights = req.getDuration() != null ? req.getDuration() : 1;
             computedTotal = base * nights;
         } catch (Exception ignore) { /* fallback dùng giá client nếu cần */ }
@@ -626,22 +509,9 @@ public class BookingController {
 
         bookingRepo.save(newBooking);
 
-        // 3. MÔ PHỎNG THANH TOÁN VÀ CẬP NHẬT TỒN KHO
+        // 3. MÔ PHỎNG THANH TOÁN (không cập nhật tồn kho theo ngày)
         newBooking.setStatus(BookingStatus.CONFIRMED);
         Booking confirmedBooking = bookingRepo.save(newBooking);
-
-        // CẬP NHẬT TỒN KHO (QUAN TRỌNG)
-        Optional<Inventory> itemOpt = inventoryRepo.findByEstablishmentIdAndDateAndItemType(
-                confirmedBooking.getEstablishmentId(), confirmedBooking.getStartDate(), confirmedBooking.getBookedItemType());
-
-        if (itemOpt.isPresent()) {
-            Inventory item = itemOpt.get();
-            item.setUnitsBooked(item.getUnitsBooked() + 1); // Tăng số lượng đã đặt
-            inventoryRepo.save(item);
-        } else {
-            // Lỗi nghiêm trọng: Booking được tạo nhưng không tìm thấy Inventory để giảm.
-            System.err.println("Lỗi INVENTORY: Không tìm thấy tồn kho cho booking ID: " + confirmedBooking.getId());
-        }
 
         return ResponseEntity.ok(confirmedBooking);
     }

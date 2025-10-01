@@ -33,6 +33,14 @@ public class AiService {
         this.restTemplate = new RestTemplate(f);
     }
 
+    // --- Simple in-memory cache for RAG results (TTL 5 minutes) ---
+    private static final java.util.concurrent.ConcurrentHashMap<String, CacheEntry> RAG_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long RAG_TTL_MS = 5 * 60 * 1000L;
+    private static class CacheEntry {
+        final List<SearchResultDTO> data; final long ts;
+        CacheEntry(List<SearchResultDTO> d, long t) { this.data = d; this.ts = t; }
+    }
+
     /**
      * Gọi Python API để sinh câu hỏi Quiz có điều kiện.
      * @param request Chứa prompt người dùng và các tham số đã thu thập.
@@ -126,6 +134,19 @@ public class AiService {
         SearchRequestDTO request = new SearchRequestDTO();
         request.setParams(params);
 
+        // Cache key theo city/type/amenities/date (nếu có)
+        String key;
+        try {
+            key = (String) new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(params);
+        } catch (Exception e) {
+            key = String.valueOf(params.hashCode());
+        }
+        long now = System.currentTimeMillis();
+        CacheEntry ce = RAG_CACHE.get(key);
+        if (ce != null && (now - ce.ts) < RAG_TTL_MS) {
+            return ce.data;
+        }
+
         try {
             // Sử dụng exchange để xử lý List<Object> trả về
             ResponseEntity<List<SearchResultDTO>> response = restTemplate.exchange(
@@ -135,7 +156,9 @@ public class AiService {
                     new ParameterizedTypeReference<List<SearchResultDTO>>() {}
             );
 
-            return response.getBody() != null ? response.getBody() : Collections.emptyList();
+            List<SearchResultDTO> out = response.getBody() != null ? response.getBody() : Collections.emptyList();
+            RAG_CACHE.put(key, new CacheEntry(out, System.currentTimeMillis()));
+            return out;
         } catch (Exception ex) {
             // Timeout hoặc lỗi mạng → trả rỗng để controller fallback sang tìm kiếm nội bộ
             return Collections.emptyList();

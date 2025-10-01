@@ -10,9 +10,8 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 // ... (Các imports khác)
 import tan.fandbaispring.dto.EstablishmentCreationRequest;
-import tan.fandbaispring.dto.InventoryUpdateRequest;
 import tan.fandbaispring.dto.LoginRequest;
-import tan.fandbaispring.model.*; // Bao gồm Booking, Establishment, User, Inventory, EstablishmentType
+import tan.fandbaispring.model.*;
 import tan.fandbaispring.repository.*; // Bao gồm các Repository cần thiết
 import tan.fandbaispring.service.AiService;
 import tan.fandbaispring.model.UnitType;
@@ -32,7 +31,6 @@ public class PartnerController {
     @Autowired private UserRepository userRepository;
     @Autowired private EstablishmentRepository establishmentRepo;
     @Autowired private BookingRepository bookingRepo;
-    @Autowired private InventoryRepository inventoryRepo; // Cần thêm InventoryRepo
     @Autowired private AiService aiService;
     @Autowired private Cloudinary cloudinary; // Autowired Cloudinary
     @Autowired private UnitTypeRepository unitTypeRepo;
@@ -228,8 +226,6 @@ public class PartnerController {
             newEstablishment.setImageUrlsGallery(galleryUrls);
 
             newEstablishment.setAvailable(true); // Mặc định là có sẵn
-            newEstablishment.setHasInventory(req.isHasInventory()); // Lấy từ DTO
-
             // Đảm bảo commit DB trước khi gọi AI để Python thấy được dữ liệu
             Establishment saved = establishmentRepo.saveAndFlush(newEstablishment);
             // Log để xác nhận amenities được lưu
@@ -270,7 +266,6 @@ public class PartnerController {
             newEstablishment.setDescriptionLong(req.getDescriptionLong());
             newEstablishment.setAmenitiesList(req.getAmenitiesList());
             newEstablishment.setAvailable(req.isAvailable());
-            newEstablishment.setHasInventory(req.isHasInventory());
 
             // Không có ảnh - để trống
             newEstablishment.setImageUrlMain(null);
@@ -296,47 +291,6 @@ public class PartnerController {
     public ResponseEntity<?> listEstablishments() {
         List<Establishment> establishments = establishmentRepo.findAll();
         return ResponseEntity.ok(establishments);
-    }
-
-    // ----------------------------------------------------------------------
-    // --- API 3: Quản lý Inventory (Tồn kho) ---
-    // ----------------------------------------------------------------------
-
-    @PostMapping("/inventory")
-    public ResponseEntity<?> updateInventory(@RequestBody InventoryUpdateRequest req) {
-
-        // 1. Kiểm tra quyền (Giả định req có establishmentId)
-        Optional<Establishment> estOpt = establishmentRepo.findById(req.getEstablishmentId());
-        if (estOpt.isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("message", "Không tìm thấy cơ sở này."));
-        }
-
-        // (Trong thực tế, cần kiểm tra: estOpt.get().getOwnerId() == req.getOwnerId())
-
-        // 2. Xử lý Logic Inventory: Tìm kiếm hoặc tạo mới
-        Optional<Inventory> invOpt = inventoryRepo.findByEstablishmentIdAndDateAndItemType(
-                req.getEstablishmentId(), req.getDate(), req.getItemType());
-
-        Inventory inventory = invOpt.orElseGet(Inventory::new);
-
-        // 3. Gán/Cập nhật dữ liệu
-        inventory.setEstablishmentId(req.getEstablishmentId());
-        inventory.setDate(req.getDate());
-        inventory.setItemType(req.getItemType());
-        inventory.setFloorArea(req.getFloorArea());
-        inventory.setPrice(req.getPrice());
-        inventory.setTotalUnits(req.getTotalUnits());
-        inventory.setItemImageUrl(req.getItemImageUrl());
-        inventory.setHasBalcony(req.getHasBalcony());
-
-        // CHÚ Ý: KHÔNG bao giờ reset unitsBooked ở đây. Nó chỉ được cập nhật khi có booking.
-        if (inventory.getUnitsBooked() == 0 && invOpt.isEmpty()) {
-            inventory.setUnitsBooked(0);
-        }
-
-        Inventory saved = inventoryRepo.save(inventory);
-
-        return ResponseEntity.ok(saved);
     }
 
     // ------------------ TYPE APIs (ROOM/TABLE chung) ------------------
@@ -470,45 +424,6 @@ public class PartnerController {
         return ResponseEntity.ok(bookings);
     }
 
-    // Cập nhật trạng thái booking (Partner)
-    @PostMapping("/bookings/{bookingId}/status")
-    public ResponseEntity<?> updateBookingStatus(@PathVariable Long bookingId, @RequestBody Map<String, String> body) {
-        String status = body.get("status");
-        Optional<Booking> opt = bookingRepo.findById(bookingId);
-        if (opt.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message","Booking không tồn tại"));
-        try {
-            Booking b = opt.get();
-            BookingStatus oldStatus = b.getStatus();
-            BookingStatus newStatus = BookingStatus.valueOf(status);
-
-            // Điều chỉnh tồn kho nếu thay đổi giữa CONFIRMED và CANCELLED
-            if (oldStatus != newStatus) {
-                if (oldStatus == BookingStatus.CONFIRMED && newStatus == BookingStatus.CANCELLED) {
-                    inventoryRepo.findByEstablishmentIdAndDateAndItemType(b.getEstablishmentId(), b.getStartDate(), b.getBookedItemType())
-                            .ifPresent(inv -> {
-                                int booked = inv.getUnitsBooked();
-                                inv.setUnitsBooked(Math.max(0, booked - 1));
-                                inventoryRepo.save(inv);
-                            });
-                }
-                if (oldStatus == BookingStatus.CANCELLED && newStatus == BookingStatus.CONFIRMED) {
-                    inventoryRepo.findByEstablishmentIdAndDateAndItemType(b.getEstablishmentId(), b.getStartDate(), b.getBookedItemType())
-                            .ifPresent(inv -> {
-                                int booked = inv.getUnitsBooked();
-                                inv.setUnitsBooked(booked + 1);
-                                inventoryRepo.save(inv);
-                            });
-                }
-            }
-
-            b.setStatus(newStatus);
-            bookingRepo.save(b);
-            return ResponseEntity.ok(Map.of("message","Cập nhật thành công"));
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body(Map.of("message","Trạng thái không hợp lệ"));
-        }
-    }
-
 
     // --- API 5: Xem Cơ sở của tôi (Mới) ---
     @GetMapping("/establishments/{ownerId}")
@@ -566,7 +481,6 @@ public class PartnerController {
             establishment.setDescriptionLong(req.getDescriptionLong());
             establishment.setAmenitiesList(req.getAmenitiesList());
             establishment.setAvailable(req.isAvailable());
-            establishment.setHasInventory(req.isHasInventory());
 
             // 3. Xử lý ảnh chính (nếu có)
             if (mainFile != null && !mainFile.isEmpty()) {
@@ -673,10 +587,6 @@ public class PartnerController {
             // 4. Xóa các UnitType liên quan
             unitTypeRepo.deleteAll(unitTypes);
 
-            // 5. Xóa các Inventory liên quan
-            List<Inventory> inventories = inventoryRepo.findByEstablishmentId(id);
-            inventoryRepo.deleteAll(inventories);
-
             // 6. Xóa cơ sở
             establishmentRepo.deleteById(id);
 
@@ -781,10 +691,6 @@ public class PartnerController {
                     .filter(UnitType::getActive)
                     .count();
 
-            // 4. Thống kê Inventory
-            List<Inventory> inventories = inventoryRepo.findByEstablishmentId(id);
-            long totalInventoryItems = inventories.size();
-
             // 5. Doanh thu (tính từ booking confirmed)
             long totalRevenue = allBookings.stream()
                     .filter(b -> b.getStatus() == BookingStatus.CONFIRMED)
@@ -800,7 +706,6 @@ public class PartnerController {
             stats.put("cancelledBookings", cancelledBookings);
             stats.put("totalUnitTypes", totalUnitTypes);
             stats.put("activeUnitTypes", activeUnitTypes);
-            stats.put("totalInventoryItems", totalInventoryItems);
             stats.put("totalRevenue", totalRevenue);
             stats.put("isAvailable", establishment.isAvailable());
 

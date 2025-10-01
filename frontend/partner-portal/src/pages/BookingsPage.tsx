@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import api from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { Card, CardContent } from '../components/ui/card'
+import { Badge } from '../components/ui/badge'
+import { Button } from '../components/ui/button'
 
 type Booking = {
   id: number
@@ -39,12 +42,6 @@ export default function BookingsPage() {
 
   useEffect(() => { load() }, [user?.id])
 
-  const updateStatus = async (id: number, status: Booking['status']) => {
-    if (user?.role !== 'PARTNER') return
-    await api.post(`/partner/bookings/${id}/status`, { status })
-    await load()
-  }
-
   const formatDate = (d: string) => new Date(d).toISOString().slice(0,10)
   const addDays = (d: string, n: number) => {
     const dt = new Date(d)
@@ -52,13 +49,11 @@ export default function BookingsPage() {
     return dt.toISOString().slice(0,10)
   }
 
-  const badge = (status: Booking['status']) => {
-    switch (status) {
-      case 'CONFIRMED': return 'bg-green-100 text-green-800 border-green-200'
-      case 'CANCELLED': return 'bg-red-100 text-red-800 border-red-200'
-      default: return 'bg-yellow-100 text-yellow-800 border-yellow-200'
-    }
-  }
+  const badgeTone = (status: Booking['status']) => (
+    status==='CONFIRMED' ? 'bg-green-100 text-green-800 border-green-200' :
+    status==='CANCELLED' ? 'bg-red-100 text-red-800 border-red-200' :
+    'bg-yellow-100 text-yellow-800 border-yellow-200'
+  )
 
   return (
     <div>
@@ -69,20 +64,24 @@ export default function BookingsPage() {
             <div className="text-slate-600">Chưa có booking nào.</div>
           ) : (
             items.map(b => (
-            <div key={b.id} className={`border rounded p-3 flex items-center justify-between` }>
-              <div className="text-sm">
-                <div className="font-medium flex items-center gap-2">
-                  <span>#{b.id}</span>
-                  <span>•</span>
-                  <span>{b.bookedItemType || '-'}</span>
-                  <span>•</span>
-                  <span>{formatDate(b.startDate)} → {addDays(b.startDate, b.duration)}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded-full border ${badge(b.status)}`}>{b.status}</span>
+            <Card key={b.id} className="border border-gray-200">
+              <CardContent className="p-3 flex items-center justify-between">
+                <div className="text-sm">
+                  <div className="font-medium flex items-center gap-2">
+                    <span>#{b.id}</span>
+                    <span>•</span>
+                    <span>{b.bookedItemType || '-'}</span>
+                    <span>•</span>
+                    <span>{formatDate(b.startDate)} → {addDays(b.startDate, b.duration)}</span>
+                    <Badge className={`text-xs ${badgeTone(b.status)}`}>{b.status}</Badge>
+                  </div>
+                  <div className="text-slate-600">Tổng: {b.totalPriceVnd?.toLocaleString()} đ • Thời lượng: {b.duration} đêm</div>
                 </div>
-                <div className="text-slate-600">Tổng: {b.totalPriceVnd?.toLocaleString()} đ • Thời lượng: {b.duration} đêm</div>
-              </div>
-              
-            </div>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline">Chi tiết</Button>
+                </div>
+              </CardContent>
+            </Card>
             ))
           )}
         </div>
