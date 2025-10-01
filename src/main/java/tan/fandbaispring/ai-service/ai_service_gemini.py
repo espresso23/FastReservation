@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
@@ -459,6 +460,30 @@ async def generate_quiz(req: QuizRequest):
         normalized = normalize_params(merged_after_llm, req.user_prompt)
         normalized = apply_defaults(normalized)
         result['final_params'] = normalized
+
+        # Ép loại bỏ hoàn toàn style_vibe nếu LLM trả về và sửa câu hỏi
+        if isinstance(result, dict):
+            # Nếu LLM lỡ tạo field style_vibe
+            fp = result.get('final_params') or {}
+            if isinstance(fp, dict) and 'style_vibe' in fp:
+                sv = fp.pop('style_vibe')
+                if sv:
+                    am = fp.get('amenities_priority')
+                    if isinstance(am, list):
+                        am.append(sv)
+                    elif am:
+                        fp['amenities_priority'] = [am, sv]
+                    else:
+                        fp['amenities_priority'] = [sv]
+                result['final_params'] = fp
+            # Nếu key_to_collect bị gợi ý là style_vibe thì chuyển thành amenities_priority
+            if result.get('key_to_collect') == 'style_vibe':
+                result['key_to_collect'] = 'amenities_priority'
+                result['missing_quiz'] = FALLBACK_QUESTIONS.get('amenities_priority')
+            # Nếu câu hỏi có nội dung phong cách/không khí, thay thế luôn
+            mq = (result.get('missing_quiz') or '')
+            if any(k in str(mq).lower() for k in ['phong cách','phong cach','không khí','khong khi','style','vibe']):
+                result['missing_quiz'] = FALLBACK_QUESTIONS.get('amenities_priority')
 
         # Tự quyết định thiếu gì dựa trên PARAM_ORDER (bỏ qua gợi ý của LLM như style_vibe)
         missing_key = next((k for k in PARAM_ORDER if not result['final_params'].get(k)), None)

@@ -1,7 +1,14 @@
 import { useState } from 'react'
-import { PaperAirplaneIcon, ArrowPathIcon } from '@heroicons/react/24/solid'
+import { ArrowPathIcon } from '@heroicons/react/24/solid'
 import { confirmBooking, processBooking } from '../api/user'
 import type { QuizResponse, Suggestion } from '../api/user'
+import { Button } from '../components/ui/button'
+import { Input } from '../components/ui/input'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { Badge } from '../components/ui/badge'
+import { Avatar, AvatarFallback } from '../components/ui/avatar'
+import { Label } from '../components/ui/label'
+import { Send, Bot, User, Sparkles } from 'lucide-react'
 
 export default function UserBookingPage() {
   const [prompt, setPrompt] = useState('Tôi muốn đi Đà Nẵng ngày 2025-10-10 2 đêm, có phòng gym')
@@ -39,6 +46,7 @@ export default function UserBookingPage() {
     try {
       const pmt = (override?.prompt ?? prompt) || ''
       let paramsToSend = override?.params ?? currentParams
+      let userMsgAppended = false
       
       // Reset state if user is starting a new search (not auto-skip)
       if (!override?.auto && pmt.trim() && quiz?.quiz_completed) {
@@ -54,11 +62,13 @@ export default function UserBookingPage() {
           { role: 'user', text: pmt },
           { role: 'assistant', text: 'Tôi hiểu bạn muốn tìm kiếm mới. Hãy để tôi hỗ trợ bạn!' }
         ])
+        userMsgAppended = true
         setPrompt('') // Clear input field
         paramsToSend = {}
       } else if (!override?.auto && pmt.trim()) {
         // Add user message to chat for normal interactions
         setMessages(prev => [...prev, { role: 'user', text: pmt }])
+        userMsgAppended = true
       }
       // Client-side quick inference to avoid re-asking basic facts
       const strip = (s:string) => (
@@ -125,8 +135,10 @@ export default function UserBookingPage() {
       if (localCity || localType) paramsToSend = { ...paramsToSend }
       if (localCity) paramsToSend.city = localCity
       if (localType) paramsToSend.establishment_type = localType
-      // Ghi message user
-      if (pmt.trim()) setMessages(prev => [...prev, { role: 'user', text: pmt.trim() }])
+      // Tránh nhân đôi tin nhắn người dùng
+      if (pmt.trim() && !userMsgAppended) {
+        setMessages(prev => [...prev, { role: 'user', text: pmt.trim() }])
+      }
       const res = await processBooking({ userPrompt: pmt, currentParams: paramsToSend })
       if (Array.isArray(res)) {
         setSuggestions(res)
@@ -300,134 +312,173 @@ export default function UserBookingPage() {
   }
 
   return (
-    <div>
-      <h1 className="text-xl font-semibold mb-4">Trợ lý đặt chỗ</h1>
-      {/* Chat window */}
-      <div className="rounded-2xl border bg-white/90 backdrop-blur card p-4 h-[560px] overflow-auto shadow-sm">
-        <div className="space-y-3">
-          {messages.map((m,idx)=> (
-            <div key={idx} className={`flex items-end gap-2 ${m.role==='user'?'justify-end':''} chat-anim`}>
-              {m.role==='assistant' && (
-                <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-medium text-slate-700 shrink-0">AI</div>
-              )}
-              <div className={`${m.role==='user'?'bg-slate-900 text-white':'bg-slate-100 text-slate-900'} px-3 py-2 rounded-2xl max-w-[78%] shadow-sm transition-all duration-300`}>{m.text}</div>
-              {m.role==='user' && (
-                <div className="w-7 h-7 rounded-full bg-slate-900 text-white flex items-center justify-center text-[10px] font-medium shrink-0">U</div>
-              )}
-            </div>
-          ))}
-          {/* Typing indicator */}
-          {loading && (!quiz || !quiz.quiz_completed) && (
-            <div className="flex items-end gap-2 chat-anim">
-              <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-medium text-slate-700 shrink-0">AI</div>
-              <div className="bg-slate-100 text-slate-900 px-3 py-2 rounded-2xl shadow-sm inline-flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.2s]"></span>
-                <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce"></span>
-                <span className="w-2 h-2 rounded-full bg-slate-400 animate-bounce [animation-delay:0.2s]"></span>
-              </div>
-            </div>
-          )}
-          {/* When a quiz step comes, render choices as chips/images in the chat */}
-          {quiz && !quiz.quiz_completed && (
-            <div className="flex items-start gap-2 chat-anim">
-              <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-medium text-slate-700 shrink-0">AI</div>
-              <div className="bg-slate-50 border px-3 py-2 rounded-2xl w-full relative">
-                {/* Heading */}
-                <div className="mb-2">
-                  <div className="text-sm font-medium text-slate-800">{keyLabel(quiz.key_to_collect)}</div>
-                  <div className="text-xs text-slate-500">Chọn một trong các gợi ý bên dưới hoặc nhập thủ công.</div>
+    <div className="h-screen flex flex-col bg-white">
+      {/* Header */}
+      <div className="flex-shrink-0 p-6 border-b border-gray-200 bg-white">
+        <div className="text-center">
+          <h1 className="text-2xl font-bold text-gray-900 mb-1">Trợ lý đặt chỗ AI</h1>
+          <p className="text-gray-600 text-sm">Hãy mô tả nhu cầu của bạn, tôi sẽ giúp bạn tìm chỗ phù hợp nhất</p>
+        </div>
+      </div>
+      
+      {/* Chat window - fixed height, no scroll on page */}
+      <div className="flex-1 flex flex-col min-h-0">
+        <Card className="flex-1 m-6 overflow-hidden border border-gray-200">
+          <CardContent className="p-0 h-full">
+            <div className="h-full overflow-y-auto p-4 space-y-4 bg-gray-50">
+            {messages.map((m,idx)=> (
+              <div key={idx} className={`flex items-end gap-3 ${m.role==='user'?'justify-end':''} chat-anim`}>
+                {m.role==='assistant' && (
+                  <Avatar className="w-8 h-8 shrink-0">
+                    <AvatarFallback className="bg-gray-100 text-gray-600 border border-gray-200">
+                      <Bot className="w-4 h-4" />
+                    </AvatarFallback>
+                  </Avatar>
+                )}
+                <div className={`${m.role==='user'?'bg-gray-900 text-white':'bg-white text-gray-900 border border-gray-200'} px-4 py-3 rounded-2xl max-w-[80%] shadow-sm transition-all duration-300`}>
+                  {m.text}
                 </div>
-                {/* Options as images */}
-                {quiz.image_options && quiz.image_options.length > 0 && (
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                    {quiz.image_options.map((opt,i)=> {
-                      const on = selectedImages.some(x=>x.url===opt.image_url)
-                      return (
-                      <button key={i} type="button" onClick={()=>{
-                        setSelectedOpt(opt.value); setCustomOpt(opt.value);
-                        setSelectedImages(prev => on ? prev.filter(x=>x.url!==opt.image_url) : [...prev, { url: opt.image_url, label: opt.label, params: (opt as any).params }])
-                      }} className={`group border rounded overflow-hidden text-left ${on? 'ring-2 ring-slate-900' : ''}`}>
-                        <div className="aspect-video bg-slate-100 overflow-hidden">
-                          <img src={opt.image_url} alt={opt.label} className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" />
-                        </div>
-                        <div className="p-2 text-sm">{opt.label}</div>
-                      </button>
-                      )
-                    })}
-                  </div>
+                {m.role==='user' && (
+                  <Avatar className="w-8 h-8 shrink-0">
+                    <AvatarFallback className="bg-gray-900 text-white">
+                      <User className="w-4 h-4" />
+                    </AvatarFallback>
+                  </Avatar>
                 )}
-                {/* Options as selectable chips (single-select) */}
-                {!quiz.image_options && quiz.key_to_collect !== 'amenities_priority' && (
-                  <div className="flex flex-wrap gap-2">
-                    {(quiz.options && quiz.options.length>0 ? quiz.options : (defaultOptions[quiz.key_to_collect as string]||[])).map((o,i)=> (
-                      <button key={i} type="button" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }} className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-full text-sm chip shadow-sm ${selectedOpt===o?'bg-slate-900 text-white border-slate-900':'bg-white hover:bg-slate-50'}`}>{optionLabel(quiz.key_to_collect as string, o)}</button>
-                    ))}
-                  </div>
-                )}
-                {/* Amenities as multi-select tags */}
-                {quiz.key_to_collect === 'amenities_priority' && (
-                  <div className="flex flex-wrap gap-2">
-                    {((quiz.options && quiz.options.length>0) ? quiz.options : (defaultOptions['amenities_priority']||[])).map((o,i)=> {
-                      const on = selectedAmenities.includes(o)
-                      return (
-                        <button key={i} type="button" onClick={()=>{
-                          setSelectedAmenities(prev => on ? prev.filter(x=>x!==o) : [...prev, o])
-                        }} className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-full text-sm chip shadow-sm ${on?'bg-slate-900 text-white border-slate-900':'bg-white hover:bg-slate-50'}`}>{o}</button>
-                      )
-                    })}
-                  </div>
-                )}
+              </div>
+            ))}
+            {/* Typing indicator */}
+            {loading && (!quiz || !quiz.quiz_completed) && (
+              <div className="flex items-end gap-3 chat-anim">
+                <Avatar className="w-8 h-8 shrink-0">
+                  <AvatarFallback className="bg-gray-100 text-gray-600 border border-gray-200">
+                    <Bot className="w-4 h-4" />
+                  </AvatarFallback>
+                </Avatar>
+                <div className="bg-white text-gray-900 border border-gray-200 px-4 py-3 rounded-2xl shadow-sm inline-flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce [animation-delay:-0.2s]"></span>
+                  <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce"></span>
+                  <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce [animation-delay:0.2s]"></span>
+                </div>
+              </div>
+            )}
+            {/* When a quiz step comes, render choices as chips/images in the chat */}
+            {quiz && !quiz.quiz_completed && (
+              <div className="flex items-start gap-3 chat-anim">
+                <Avatar className="w-8 h-8 shrink-0">
+                  <AvatarFallback className="bg-gray-100 text-gray-600 border border-gray-200">
+                    <Bot className="w-4 h-4" />
+                  </AvatarFallback>
+                </Avatar>
+                <Card className="w-full border border-gray-200 shadow-sm">
+                  <CardContent className="p-4 bg-white">
+                    {/* Heading */}
+                    <div className="mb-4">
+                      <CardTitle className="text-lg text-gray-900 mb-1">{keyLabel(quiz.key_to_collect)}</CardTitle>
+                      <CardDescription className="text-gray-600">Chọn một trong các gợi ý bên dưới hoặc nhập thủ công.</CardDescription>
+                    </div>
+                    {/* Options as images */}
+                    {quiz.image_options && quiz.image_options.length > 0 && (
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+                        {quiz.image_options.map((opt,i)=> {
+                          const on = selectedImages.some(x=>x.url===opt.image_url)
+                          return (
+                          <Button key={i} variant={on ? "default" : "outline"} className="p-0 h-auto flex flex-col border-gray-200" onClick={()=>{
+                            setSelectedOpt(opt.value); setCustomOpt(opt.value);
+                            setSelectedImages(prev => on ? prev.filter(x=>x.url!==opt.image_url) : [...prev, { url: opt.image_url, label: opt.label, params: (opt as any).params }])
+                          }}>
+                            <div className="aspect-video bg-gray-100 overflow-hidden rounded-t-md">
+                              <img src={opt.image_url} alt={opt.label} className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" />
+                            </div>
+                            <div className="p-2 text-xs font-medium text-gray-700">{opt.label}</div>
+                          </Button>
+                          )
+                        })}
+                      </div>
+                    )}
+                    {/* Options as selectable chips (single-select) */}
+                    {!quiz.image_options && quiz.key_to_collect !== 'amenities_priority' && (
+                      <div className="flex flex-wrap gap-2 mb-4">
+                        {(quiz.options && quiz.options.length>0 ? quiz.options : (defaultOptions[quiz.key_to_collect as string]||[])).map((o,i)=> (
+                          <Button key={i} variant={selectedOpt===o ? "default" : "outline"} size="sm" className="border-gray-200" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }}>
+                            {optionLabel(quiz.key_to_collect as string, o)}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                    {/* Amenities as multi-select tags */}
+                    {quiz.key_to_collect === 'amenities_priority' && (
+                      <div className="flex flex-wrap gap-2 mb-4">
+                        {((quiz.options && quiz.options.length>0) ? quiz.options : (defaultOptions['amenities_priority']||[])).map((o,i)=> {
+                          const on = selectedAmenities.includes(o)
+                          return (
+                            <Button key={i} variant={on ? "default" : "outline"} size="sm" className="border-gray-200" onClick={()=>{
+                              setSelectedAmenities(prev => on ? prev.filter(x=>x!==o) : [...prev, o])
+                            }}>
+                              {o}
+                            </Button>
+                          )
+                        })}
+                      </div>
+                    )}
                 {/* Inputs only for date/price/duration */}
                 {renderInputForKey(quiz.key_to_collect)}
-                {/* Submit button pinned bottom-right */}
-                <button className="absolute right-2 bottom-2 h-9 w-9 rounded-full bg-slate-900 text-white flex items-center justify-center hover:brightness-110 transition disabled:opacity-50" onClick={answerAndNext} disabled={loading} title="Gửi">
-                  <PaperAirplaneIcon className="w-4 h-4" />
-                </button>
-                {/* Collected params summary as inline chips */}
-                <div className="mt-3 flex flex-wrap gap-2 text-xs pr-12">
-                  {Object.entries(currentParams).map(([k,v])=> (
-                    <span key={k} className="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 chip shadow-sm">{keyLabel(k)}: {String(v)}</span>
-                  ))}
-                </div>
-                {/* Selected thumbnails history */}
-                {selectedImages.length>0 && (
-                  <div className="mt-3 flex gap-2">
-                    {selectedImages.map((it,idx)=>(
-                      <img key={idx} src={it.url} alt={it.label} className="w-16 h-16 object-cover rounded" />
-                    ))}
-                  </div>
-                )}
+                    {/* Submit button */}
+                    <div className="flex justify-end">
+                      <Button onClick={answerAndNext} disabled={loading} size="sm" className="bg-gray-900 hover:bg-gray-800 text-white">
+                        <Send className="w-4 h-4 mr-2" />
+                        Gửi
+                      </Button>
+                    </div>
+                    {/* Collected params summary as inline chips */}
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {Object.entries(currentParams).map(([k,v])=> (
+                        <Badge key={k} variant="secondary" className="text-xs bg-gray-100 text-gray-700 border border-gray-200">
+                          {keyLabel(k)}: {String(v)}
+                        </Badge>
+                      ))}
+                    </div>
+                    {/* Selected thumbnails history */}
+                    {selectedImages.length>0 && (
+                      <div className="mt-4 flex gap-2">
+                        {selectedImages.map((it,idx)=>(
+                          <img key={idx} src={it.url} alt={it.label} className="w-16 h-16 object-cover rounded-md border border-gray-200" />
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
               </div>
-              <div className="w-7 h-7" />
-            </div>
-          )}
+            )}
 
           {/* Suggestions as assistant bubble inside chat */}
           {suggestions && (
             <div className="flex items-start gap-2 chat-anim">
-              <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-medium text-slate-700 shrink-0">AI</div>
-              <div className="bg-slate-50 border px-3 py-2 rounded-2xl w-full">
-                <div className="text-sm font-medium text-slate-800 mb-2">
+              <div className="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center text-[10px] font-medium text-gray-700 shrink-0">AI</div>
+              <div className="bg-white border border-gray-200 px-3 py-2 rounded-2xl w-full">
+                <div className="text-sm font-medium text-gray-900 mb-2">
                   {suggestions.length > 0 ? `Mình có ${suggestions.length} gợi ý dành cho bạn:` : 'Chưa tìm thấy kết quả phù hợp.'}
                 </div>
                 {suggestions.length > 0 ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {suggestions.map(s => (
-                      <div key={s.establishmentId + (s.itemType||'')} className="border rounded overflow-hidden bg-white card">
+                      <div key={s.establishmentId + (s.itemType||'')} className="border border-gray-200 rounded overflow-hidden bg-white card shadow-sm">
                         {s.itemImageUrl || s.imageUrlMain ? (
-                          <div className="aspect-video bg-slate-100">
+                          <div className="aspect-video bg-gray-100">
                             <img src={s.itemImageUrl || s.imageUrlMain!} className="w-full h-full object-cover" />
                           </div>
                         ) : null}
                         <div className="p-3">
-                          <div className="font-medium">{s.establishmentName}</div>
-                          <div className="text-sm text-slate-600">{s.city}</div>
-                          <div className="mt-1 text-sm">Loại: <span className="font-medium">{s.itemType || s.floorArea}</span></div>
-                          <div className="text-sm">Giá: {s.finalPrice?.toLocaleString()} đ</div>
-                          <div className="text-xs text-slate-600">Còn: {s.unitsAvailable}</div>
+                          <div className="font-medium text-gray-900">{s.establishmentName}</div>
+                          <div className="text-sm text-gray-600">{s.city}</div>
+                          <div className="mt-1 text-sm text-gray-700">Loại: <span className="font-medium">{s.itemType || s.floorArea}</span></div>
+                          <div className="text-sm text-gray-900">Giá: {s.finalPrice?.toLocaleString()} đ</div>
+                          <div className="text-xs text-gray-600">Còn: {s.unitsAvailable}</div>
                           <div className="mt-2 flex items-center gap-2">
-                            <button className="px-3 py-1 border rounded" onClick={()=>book(s)} disabled={loading}>Book ngay</button>
-                            <a className="px-3 py-1 border rounded" href={`/establishments/${s.establishmentId}`} target="_blank" rel="noreferrer">Xem chi tiết</a>
+                            <Button size="sm" className="bg-gray-900 hover:bg-gray-800 text-white" onClick={()=>book(s)} disabled={loading}>Book ngay</Button>
+                            <Button size="sm" variant="outline" className="border-gray-200" asChild>
+                              <a href={`/establishments/${s.establishmentId}`} target="_blank" rel="noreferrer">Xem chi tiết</a>
+                            </Button>
                           </div>
                         </div>
                       </div>
@@ -436,85 +487,130 @@ export default function UserBookingPage() {
                 ) : null}
                 {suggestions.length > 0 ? (
                   <div className="mt-3 text-sm">
-                    <div className="text-slate-700 mb-2">Bạn có muốn xem gợi ý khác hoặc tinh chỉnh tiêu chí?</div>
+                    <div className="text-gray-700 mb-2">Bạn có muốn xem gợi ý khác hoặc tinh chỉnh tiêu chí?</div>
                     <div className="flex flex-wrap gap-2">
-                      <button className="px-3 py-1.5 border rounded-full" onClick={moreSuggestions}>Gợi ý khác</button>
-                      <button className="px-3 py-1.5 border rounded-full" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</button>
-                      <button className="px-3 py-1.5 border rounded-full" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</button>
-                      <button className="px-3 py-1.5 border rounded-full" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</button>
+                      <Button size="sm" variant="outline" className="border-gray-200" onClick={moreSuggestions}>Gợi ý khác</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</Button>
                     </div>
                   </div>
                 ) : (
-                  <div className="text-sm text-slate-700">
+                  <div className="text-sm text-gray-700">
                     Hãy nới tiêu chí tìm kiếm một chút nhé:
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</button>
-                      <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</button>
-                      <button className="px-2 py-1 border rounded-full" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</button>
+                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('more_budget')}>Tăng ngân sách +20%</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('drop_amenities')}>Bỏ lọc tiện ích</Button>
+                      <Button size="sm" variant="outline" className="border-gray-200" onClick={()=>relaxAndSearch('shift_date')}>Lùi/ngày khác</Button>
                     </div>
                   </div>
                 )}
               </div>
             </div>
           )}
-        </div>
-      </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Input bar: chỉ hiển thị khi chưa vào quiz, hoặc quiz đã hoàn thành */}
       {(!quiz || quiz.quiz_completed) && (
-        <div className="mt-3">
+        <div className="flex-shrink-0 p-6 border-t border-gray-200 bg-white">
           <div className="relative">
-            <input
-              className="w-full border rounded-full px-4 py-3 pr-12 shadow-sm"
-              placeholder="Nhập yêu cầu..."
+            <Input
+              className="w-full rounded-full px-4 py-3 pr-12 shadow-sm border-gray-200 focus:border-gray-400"
+              placeholder="Nhập yêu cầu của bạn..."
               value={prompt}
-              onChange={(e)=>setPrompt(e.target.value)}
-              onKeyDown={(e)=>{ if (e.key==='Enter' && !e.shiftKey && !loading) { e.preventDefault(); send() } }}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>)=>setPrompt(e.target.value)}
+              onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>)=>{ if (e.key==='Enter' && !e.shiftKey && !loading) { e.preventDefault(); send() } }}
             />
-            <button
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full bg-slate-900 text-white flex items-center justify-center hover:brightness-110 transition disabled:opacity-50"
+            <Button
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full bg-gray-900 hover:bg-gray-800 text-white"
               onClick={()=>send()}
               disabled={loading}
-              title="Gửi"
+              size="sm"
             >
-              <PaperAirplaneIcon className="w-4 h-4" />
-            </button>
+              <Send className="w-4 h-4" />
+            </Button>
           </div>
           <div className="mt-2 flex items-center gap-2">
-            {loading && <ArrowPathIcon className="w-4 h-4 animate-spin text-slate-500" />}
+            {loading && <ArrowPathIcon className="w-4 h-4 animate-spin text-gray-500" />}
             {msg && <span className="text-green-700">{msg}</span>}
           </div>
         </div>
       )}
 
       {quiz && quiz.quiz_completed && (
-        <div className="mt-4 rounded-2xl border p-3 bg-white">
-          <div className="font-medium mb-2">Tham số cuối</div>
-          <pre className="text-xs bg-slate-50 p-2 rounded overflow-auto">{JSON.stringify(quiz.final_params, null, 2)}</pre>
-          <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
-            <input className="border rounded px-2 py-1" placeholder="Thành phố" value={currentParams.city||''} onChange={(e)=>setCurrentParams({ ...currentParams, city: e.target.value })} />
-            <input type="date" className="border rounded px-2 py-1" value={currentParams.check_in_date||''} onChange={(e)=>setCurrentParams({ ...currentParams, check_in_date: e.target.value })} />
-            <input type="number" className="border rounded px-2 py-1" placeholder="Số đêm" value={currentParams.duration||''} onChange={(e)=>setCurrentParams({ ...currentParams, duration: Number(e.target.value||0) })} />
-            <input type="number" className="border rounded px-2 py-1" placeholder="Ngân sách tối đa" value={currentParams.max_price||''} onChange={(e)=>setCurrentParams({ ...currentParams, max_price: Number(e.target.value||0) })} />
-          </div>
-          <div className="mt-2 flex gap-2">
-            <button className="px-3 py-1 border rounded" onClick={()=>{ setPrompt(''); send({ params: currentParams, prompt: '' }) }} disabled={loading}>Tìm gợi ý</button>
-            <button 
-              className="px-3 py-1 bg-orange-600 text-white rounded hover:bg-orange-700" 
-              onClick={() => {
-                setQuiz(null)
-                setSuggestions(null)
-                setCurrentParams({})
-                setSelectedOpt('')
-                setCustomOpt('')
-                setSelectedAmenities([])
-                setSelectedImages([])
-                setMessages(prev => [...prev, { role: 'assistant', text: 'Tôi đã reset tìm kiếm. Hãy mô tả nhu cầu mới của bạn!' }])
-              }}
-            >
-              Tìm kiếm mới
-            </button>
-          </div>
+        <div className="flex-shrink-0 p-6 border-t border-gray-200 bg-white">
+          <Card className="border border-gray-200">
+            <CardHeader>
+              <CardTitle className="text-lg text-gray-900">Tham số tìm kiếm</CardTitle>
+              <CardDescription className="text-gray-600">Điều chỉnh các tham số nếu cần thiết</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 bg-white">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <Label htmlFor="city">Thành phố</Label>
+                <Input 
+                  id="city"
+                  placeholder="Thành phố" 
+                  value={currentParams.city||''} 
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>)=>setCurrentParams({ ...currentParams, city: e.target.value })} 
+                />
+              </div>
+              <div>
+                <Label htmlFor="check_in_date">Ngày check-in</Label>
+                <Input 
+                  id="check_in_date"
+                  type="date" 
+                  value={currentParams.check_in_date||''} 
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>)=>setCurrentParams({ ...currentParams, check_in_date: e.target.value })} 
+                />
+              </div>
+              <div>
+                <Label htmlFor="duration">Số đêm</Label>
+                <Input 
+                  id="duration"
+                  type="number" 
+                  placeholder="Số đêm" 
+                  value={currentParams.duration||''} 
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>)=>setCurrentParams({ ...currentParams, duration: Number(e.target.value||0) })} 
+                />
+              </div>
+              <div>
+                <Label htmlFor="max_price">Ngân sách tối đa</Label>
+                <Input 
+                  id="max_price"
+                  type="number" 
+                  placeholder="Ngân sách tối đa" 
+                  value={currentParams.max_price||''} 
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>)=>setCurrentParams({ ...currentParams, max_price: Number(e.target.value||0) })} 
+                />
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={()=>{ setPrompt(''); send({ params: currentParams, prompt: '' }) }} disabled={loading} className="bg-gray-900 hover:bg-gray-800 text-white">
+                <Sparkles className="w-4 h-4 mr-2" />
+                Tìm gợi ý
+              </Button>
+              <Button 
+                variant="outline"
+                className="border-gray-200"
+                onClick={() => {
+                  setQuiz(null)
+                  setSuggestions(null)
+                  setCurrentParams({})
+                  setSelectedOpt('')
+                  setCustomOpt('')
+                  setSelectedAmenities([])
+                  setSelectedImages([])
+                  setMessages(prev => [...prev, { role: 'assistant', text: 'Tôi đã reset tìm kiếm. Hãy mô tả nhu cầu mới của bạn!' }])
+                }}
+              >
+                Tìm kiếm mới
+              </Button>
+            </div>
+            </CardContent>
+          </Card>
         </div>
       )}
 
