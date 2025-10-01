@@ -63,6 +63,7 @@ public class BookingController {
                 ragParams.put("city", displayCity);
             }
         }
+        // Cache đơn giản 5 phút theo (city,type,amenities)
         List<SearchResultDTO> ragResults = aiService.performRagSearch(ragParams);
 
         // 3. Lọc Post-RAG (Thành phố + Giá + Sao + Số người)
@@ -123,7 +124,7 @@ public class BookingController {
                     .toList();
         }
 
-        // 4. KIỂM TRA TỒN KHO (INVENTORY CHECK) và Chuẩn bị FinalResponse
+        // 4. KIỂM TRA TỒN KHO (INVENTORY CHECK) và Chuẩn bị FinalResponse (xếp hạng lai)
         List<FinalResultResponse> finalSuggestions = new ArrayList<>();
 
         for (Establishment establishment : establishments) {
@@ -336,6 +337,35 @@ public class BookingController {
                 }
             }
         }
+        // Xếp hạng lai: ưu tiên tồn kho, giá trong ngân sách, khớp tiện ích (nếu có)
+        final List<String> amenNeed = new ArrayList<>();
+        try {
+            Object am = finalParams.get("amenities_priority");
+            if (am != null) {
+                for (String s : String.valueOf(am).split(",")) {
+                    String t = s.trim(); if (!t.isEmpty()) amenNeed.add(t.toLowerCase());
+                }
+            }
+        } catch (Exception ignore) {}
+        final Long budget = maxPrice;
+        finalSuggestions.sort((a,b)->{
+            int scoreA = 0, scoreB = 0;
+            // inventory available
+            scoreA += a.getUnitsAvailable()>0 ? 3 : 0;
+            scoreB += b.getUnitsAvailable()>0 ? 3 : 0;
+            // price within budget
+            scoreA += (a.getFinalPrice()!=null && a.getFinalPrice()<=budget) ? 2 : 0;
+            scoreB += (b.getFinalPrice()!=null && b.getFinalPrice()<=budget) ? 2 : 0;
+            // simple amenity match by name token
+            int addA = 0, addB = 0;
+            for (String need: amenNeed){
+                if (a.getItemType()!=null && a.getItemType().toLowerCase().contains(need)) addA++;
+                if (b.getItemType()!=null && b.getItemType().toLowerCase().contains(need)) addB++;
+            }
+            scoreA += addA; scoreB += addB;
+            return Integer.compare(scoreB, scoreA);
+        });
+
         return ResponseEntity.ok(finalSuggestions);
     }
 

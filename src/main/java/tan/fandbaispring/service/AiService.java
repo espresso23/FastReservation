@@ -52,14 +52,18 @@ public class AiService {
                     ? new java.util.HashMap<>(request.getCurrentParams())
                     : new java.util.HashMap<>();
             String prompt = request.getUserPrompt() != null ? request.getUserPrompt().toLowerCase() : "";
-            if (!params.containsKey("amenities_priority") && prompt.contains("lãng mạn")) {
-                params.put("amenities_priority", "romantic");
-            }
 
-            String[] order = new String[]{
+            // Thứ tự câu hỏi mặc định (Hotel). Với Restaurant sẽ bỏ qua 'duration'
+            java.util.List<String> orderList = new java.util.ArrayList<>(java.util.Arrays.asList(
                     "city", "check_in_date", "max_price",
                     "travel_companion", "duration", "amenities_priority"
-            };
+            ));
+            try {
+                Object typeObj = params.get("establishment_type");
+                if (typeObj != null && "RESTAURANT".equalsIgnoreCase(String.valueOf(typeObj))) {
+                    orderList.remove("duration");
+                }
+            } catch (Exception ignore) {}
             java.util.Map<String, String> questions = java.util.Map.of(
                     "city", "Bạn muốn đi ở thành phố nào?",
                     "check_in_date", "Bạn dự định ngày bắt đầu chuyến đi là khi nào? (YYYY-MM-DD)",
@@ -70,10 +74,14 @@ public class AiService {
             );
 
             String missing = null;
-            for (String key : order) {
+            for (String key : orderList) {
                 Object v = params.get(key);
                 if (v == null || (v instanceof String && ((String) v).isBlank())) {
                     missing = key;
+                    // Ưu tiên hỏi loại cơ sở nếu đã có city nhưng thiếu establishment_type
+                    if ("city".equals(key) && params.get("city") != null && params.get("establishment_type") == null) {
+                        missing = "establishment_type";
+                    }
                     break;
                 }
                 // Cho phép hỏi thêm tiện ích một lần ngay cả khi đã chọn

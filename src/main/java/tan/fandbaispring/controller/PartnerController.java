@@ -350,7 +350,7 @@ public class PartnerController {
     @GetMapping("/types/{establishmentId}")
     public ResponseEntity<?> listTypes(@PathVariable String establishmentId) {
         List<UnitType> types = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishmentId);
-        // Trả kèm tên và địa chỉ cơ sở để FE hiển thị đẹp
+        // Trả kèm tên, địa chỉ và gợi ý category theo loại cơ sở (ROOM cho HOTEL, TABLE cho RESTAURANT)
         Optional<Establishment> estOpt = establishmentRepo.findById(establishmentId);
         Map<String, Object> meta;
         if (estOpt.isPresent()) {
@@ -358,6 +358,29 @@ public class PartnerController {
             meta = new HashMap<>();
             meta.put("establishmentName", e.getName());
             meta.put("establishmentAddress", e.getAddress());
+            try {
+                String cat = e.getType() == EstablishmentType.HOTEL ? "ROOM" : "TABLE";
+                meta.put("suggestedCategory", cat);
+                // Nếu cơ sở CHƯA có loại nào -> sinh danh sách prototype mặc định theo loại cơ sở (KHÔNG lưu DB)
+                if (types == null || types.isEmpty()) {
+                    types = generateDefaultPrototypes(e, establishmentId);
+                    meta.put("prototype", true);
+                } else {
+                    meta.put("prototype", false);
+                }
+                // Sắp xếp/nhóm danh sách để FE hiển thị theo category phù hợp
+                List<UnitType> primary = new ArrayList<>();
+                List<UnitType> others = new ArrayList<>();
+                for (UnitType t : types) {
+                    if (t.getCategory() != null && t.getCategory().name().equalsIgnoreCase(cat)) primary.add(t);
+                    else others.add(t);
+                }
+                // Ưu tiên loại phù hợp đứng trước
+                List<UnitType> merged = new ArrayList<>();
+                merged.addAll(primary);
+                merged.addAll(others);
+                types = merged;
+            } catch (Exception ignore) {}
         } else {
             meta = new HashMap<>();
         }
@@ -365,6 +388,42 @@ public class PartnerController {
         body.put("items", types);
         body.put("meta", meta);
         return ResponseEntity.ok(body);
+    }
+
+    // Sinh prototype mặc định theo loại cơ sở để FE có thể hiển thị ngay mà không cần tạo thủ công
+    private List<UnitType> generateDefaultPrototypes(Establishment e, String establishmentId) {
+        List<UnitType> out = new ArrayList<>();
+        if (e.getType() == EstablishmentType.HOTEL) {
+            out.add(buildType(establishmentId, UnitCategory.ROOM, "STD", "Standard Room", 2, true, 500_000L, null));
+            out.add(buildType(establishmentId, UnitCategory.ROOM, "DLX", "Deluxe Room", 3, true, 800_000L, null));
+            out.add(buildType(establishmentId, UnitCategory.ROOM, "FAM", "Family Suite", 4, false, 1_200_000L, null));
+        } else { // RESTAURANT
+            out.add(buildType(establishmentId, UnitCategory.TABLE, "TB2", "Bàn 2 người", 2, null, null, 100_000L));
+            out.add(buildType(establishmentId, UnitCategory.TABLE, "TB4", "Bàn 4 người", 4, null, null, 150_000L));
+            out.add(buildType(establishmentId, UnitCategory.TABLE, "VIP", "Bàn VIP", 6, null, null, 300_000L));
+        }
+        // Đặt các giá trị mô phỏng khác để FE có nội dung hiển thị
+        for (UnitType t : out) {
+            t.setId(-1L); // đánh dấu prototype (id âm)
+            t.setTotalUnits(10);
+            t.setActive(true);
+        }
+        return out;
+    }
+
+    private UnitType buildType(String estId, UnitCategory cat, String code, String name,
+                               Integer capacity, Boolean hasBalcony,
+                               Long basePrice, Long deposit) {
+        UnitType t = new UnitType();
+        t.setEstablishmentId(estId);
+        t.setCategory(cat);
+        t.setCode(code);
+        t.setName(name);
+        t.setCapacity(capacity);
+        t.setHasBalcony(hasBalcony);
+        t.setBasePrice(basePrice);
+        t.setDepositAmount(deposit);
+        return t;
     }
 
     // Cập nhật UnitType

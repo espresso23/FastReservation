@@ -152,8 +152,7 @@ def image_options_from_real_data(param_key: str, final_params: Dict[str, Any]) -
             label = f"{name}"
             # Suy ra style nhẹ theo mô tả nếu có
             params = None
-            if param_key == "style_vibe":
-                params = {"style_vibe": (final_params.get("style_vibe") or "romantic")}
+            
             options.append(ImageOption(label=label, image_url=img, value=name, params=params))
         return options or None
     except Exception:
@@ -394,6 +393,45 @@ async def generate_quiz(req: QuizRequest):
         if "lãng mạn" in prompt_lc and not final_params.get("style_vibe"):
             final_params["style_vibe"] = "romantic"
         missing = next((k for k in PARAM_ORDER if not final_params.get(k)), None)
+        if missing == 'amenities_priority':
+            try:
+                conn = psycopg2.connect(
+                    host=DB_CONFIG['host'], port=DB_CONFIG['port'], database=DB_CONFIG['database'],
+                    user=DB_CONFIG['user'], password=DB_CONFIG['password']
+                )
+                cur = conn.cursor()
+                try:
+                    cur.execute("SET search_path TO public;")
+                except Exception:
+                    pass
+                where = []
+                params = []
+                if final_params.get('city'):
+                    where.append("lower(city) = lower(%s)"); params.append(str(final_params['city']))
+                if final_params.get('establishment_type'):
+                    where.append("type = %s"); params.append(str(final_params['establishment_type']))
+                sql = "SELECT id FROM establishment"
+                if where:
+                    sql += " WHERE " + " AND ".join(where)
+                sql += " LIMIT 100"
+                cur.execute(sql, tuple(params))
+                ids = [r[0] for r in cur.fetchall()]
+                amen = []
+                if ids:
+                    cur.execute("SELECT DISTINCT amenities_list FROM establishment_amenities_list WHERE establishment_id = ANY(%s)", (ids,))
+                    amen = [str(r[0]).strip() for r in cur.fetchall() if r and r[0]]
+                opts = sorted(list({a for a in amen if a}))
+                if opts:
+                    return {
+                        "quiz_completed": False,
+                        "missing_quiz": FALLBACK_QUESTIONS.get('amenities_priority', 'Bạn ưu tiên tiện ích nào?'),
+                        "key_to_collect": 'amenities_priority',
+                        "final_params": final_params,
+                        "options": opts,
+                        "image_options": None
+                    }
+            except Exception as _:
+                pass
         if missing:
             # TẠM THỜI TẮT image_options → FE chỉ hiển thị TAGS/INPUT
             image_opts = None
@@ -470,6 +508,8 @@ async def generate_quiz(req: QuizRequest):
 
         # Tự quyết định thiếu gì dựa trên PARAM_ORDER (bỏ qua gợi ý của LLM như style_vibe)
         missing_key = next((k for k in PARAM_ORDER if not result['final_params'].get(k)), None)
+        if missing_key == 'city' and result['final_params'].get('city') and not result['final_params'].get('establishment_type'):
+            missing_key = 'establishment_type'
         if missing_key:
             result['quiz_completed'] = False
             result['key_to_collect'] = missing_key
@@ -499,6 +539,8 @@ async def generate_quiz(req: QuizRequest):
             elif any(k in plc for k in ["nha hang","nhà hàng","restaurant"]):
                 final_params["establishment_type"] = "RESTAURANT"
         missing = next((k for k in PARAM_ORDER if not final_params.get(k)), None)
+        if missing == 'city' and final_params.get('city') and not final_params.get('establishment_type'):
+            missing = 'establishment_type'
         if missing:
             # TẮT image_options khi fallback
             image_opts = None
@@ -525,7 +567,6 @@ async def rag_search(req: SearchRequest):
         return []
         
     # Lấy các tham số đã thu thập
-    style = req.params.get("style_vibe", "phù hợp")
     companion = req.params.get("travel_companion", "tôi")
     city = req.params.get("city")  # có thể None
     amenities = req.params.get("amenities_priority", "tiện ích cơ bản")

@@ -393,12 +393,50 @@ async def generate_quiz(req: QuizRequest):
                 final_params["establishment_type"] = "HOTEL"
             elif any(k in plc for k in ["nha hang","nhà hàng","restaurant"]):
                 final_params["establishment_type"] = "RESTAURANT"
-        # Heuristic nhỏ: nếu prompt chứa từ khóa, suy luận nhẹ
-        prompt_lc = (req.user_prompt or "").lower()
-        if "lãng mạn" in prompt_lc and not final_params.get("amenities_priority"):
-            final_params["amenities_priority"] = "romantic"
+        # Giữ prompt gốc với dấu câu cho LLM; hạn chế heuristic hard-code
         order = effective_param_order(final_params)
         missing = next((k for k in order if not final_params.get(k)), None)
+        # Nếu đang thu thập amenities_priority, gợi ý options từ DB (unique, có city/type nếu có)
+        if missing == 'amenities_priority':
+            try:
+                conn = psycopg2.connect(
+                    host=DB_CONFIG['host'], port=DB_CONFIG['port'], database=DB_CONFIG['database'],
+                    user=DB_CONFIG['user'], password=DB_CONFIG['password']
+                )
+                cur = conn.cursor()
+                try:
+                    cur.execute("SET search_path TO public;")
+                except Exception:
+                    pass
+                where = []
+                params = []
+                if final_params.get('city'):
+                    where.append("lower(city) = lower(%s)"); params.append(str(final_params['city']))
+                if final_params.get('establishment_type'):
+                    where.append("type = %s"); params.append(str(final_params['establishment_type']))
+                sql = "SELECT id FROM establishment"
+                if where:
+                    sql += " WHERE " + " AND ".join(where)
+                sql += " LIMIT 100"
+                cur.execute(sql, tuple(params))
+                ids = [r[0] for r in cur.fetchall()]
+                amen = []
+                if ids:
+                    cur.execute("SELECT DISTINCT amenities_list FROM establishment_amenities_list WHERE establishment_id = ANY(%s)", (ids,))
+                    amen = [str(r[0]).strip() for r in cur.fetchall() if r and r[0]]
+                # unique + lọc rỗng
+                opts = sorted(list({a for a in amen if a}))
+                if opts:
+                    return {
+                        "quiz_completed": False,
+                        "missing_quiz": FALLBACK_QUESTIONS.get('amenities_priority', 'Bạn ưu tiên tiện ích nào?'),
+                        "key_to_collect": 'amenities_priority',
+                        "final_params": final_params,
+                        "options": opts,
+                        "image_options": None
+                    }
+            except Exception as _:
+                pass
         if missing:
             # TẠM THỜI TẮT image_options → FE chỉ hiển thị TAGS/INPUT
             image_opts = None
@@ -500,6 +538,9 @@ async def generate_quiz(req: QuizRequest):
         # Tự quyết định thiếu gì dựa trên PARAM_ORDER (bỏ qua gợi ý của LLM như style_vibe)
         ord2 = effective_param_order(result['final_params'])
         missing_key = next((k for k in ord2 if not result['final_params'].get(k)), None)
+        # Nếu người dùng chỉ nêu city nhưng chưa rõ loại cơ sở -> ưu tiên hỏi establishment_type trước
+        if missing_key == 'city' and result['final_params'].get('city') and not result['final_params'].get('establishment_type'):
+            missing_key = 'establishment_type'
         if missing_key:
             result['quiz_completed'] = False
             result['key_to_collect'] = missing_key
@@ -530,6 +571,8 @@ async def generate_quiz(req: QuizRequest):
                 final_params["establishment_type"] = "RESTAURANT"
         order3 = effective_param_order(final_params)
         missing = next((k for k in order3 if not final_params.get(k)), None)
+        if missing == 'city' and final_params.get('city') and not final_params.get('establishment_type'):
+            missing = 'establishment_type'
         if missing:
             # TẮT image_options khi fallback
             image_opts = None

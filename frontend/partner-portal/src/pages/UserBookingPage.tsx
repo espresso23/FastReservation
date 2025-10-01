@@ -3,6 +3,7 @@ import { ArrowPathIcon } from '@heroicons/react/24/solid'
 import { confirmBooking, processBooking } from '../api/user'
 import type { QuizResponse, Suggestion } from '../api/user'
 import { Button } from '../components/ui/button'
+import { DatePicker } from '../components/ui/calendar'
 import { Input } from '../components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
@@ -49,7 +50,7 @@ export default function UserBookingPage() {
       let userMsgAppended = false
       
       // Reset state if user is starting a new search (not auto-skip)
-      if (!override?.auto && pmt.trim() && quiz?.quiz_completed) {
+      if (!override?.auto && pmt.trim() && ((quiz && quiz.quiz_completed) || (suggestions && suggestions.length >= 0))) {
         // User is starting a new search, reset everything
         setQuiz(null)
         setSuggestions(null)
@@ -247,13 +248,16 @@ export default function UserBookingPage() {
   const renderInputForKey = (k?: string) => {
     if (!k) return null
     if (k === 'check_in_date') return (
-      <Input type="date" className="h-10" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
+      <DatePicker value={customOpt? new Date(customOpt): undefined} onChange={(d)=>setCustomOpt(d? d.toISOString().slice(0,10): '')} />
     )
     if (k === 'duration' || k === 'max_price' || k === 'num_guests') return (
       <Input type="number" className="h-10" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
     )
     if (k === 'travel_companion') return (
       <Input type="text" className="h-10" placeholder="Nhập thủ công (vd: 3 người)" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
+    )
+    if (k === 'city') return (
+      <Input type="text" className="h-10" placeholder="Nhập tên thành phố (ví dụ: Đà Nẵng)" value={customOpt} onChange={(e:any)=>setCustomOpt(e.target.value)} />
     )
     return null
   }
@@ -278,12 +282,12 @@ export default function UserBookingPage() {
       if (!customOpt.trim()) return
       val = customOpt.trim()
     } else {
-      // Cho phép nhập tay cho travel_companion
-      if (k === 'travel_companion' && customOpt.trim()) {
-        val = customOpt.trim()
-      } else {
-        if (!selectedOpt.trim()) return
-        val = selectedOpt.trim()
+      // Cho phép nhập tay cho travel_companion/city
+      if ((k === 'travel_companion' || k==='city') && customOpt.trim()) {
+      val = customOpt.trim()
+    } else {
+      if (!selectedOpt.trim()) return
+      val = selectedOpt.trim()
       }
     }
 
@@ -355,21 +359,6 @@ export default function UserBookingPage() {
                 )}
               </div>
             ))}
-            {/* Typing indicator */}
-            {loading && (!quiz || !quiz.quiz_completed) && (
-              <div className="flex items-end gap-3 transition-all duration-300 ease-out">
-                <Avatar className="w-8 h-8 shrink-0">
-                  <AvatarFallback className="bg-gray-100 text-gray-600 border border-gray-200">
-                    <Bot className="w-4 h-4" />
-                  </AvatarFallback>
-                </Avatar>
-                <div className="bg-white text-gray-900 border border-gray-200 px-4 py-3 rounded-2xl shadow-sm inline-flex items-center gap-2 transition-all duration-300 ease-out">
-                  <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce [animation-delay:-0.2s]"></span>
-                  <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce"></span>
-                  <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce [animation-delay:0.2s]"></span>
-                </div>
-              </div>
-            )}
             {/* When a quiz step comes, render choices as chips/images in the chat */}
             {quiz && !quiz.quiz_completed && (
               <div className="flex items-start gap-3 transition-all duration-300 ease-out">
@@ -408,7 +397,7 @@ export default function UserBookingPage() {
                     {!quiz.image_options && quiz.key_to_collect !== 'amenities_priority' && (
                       <div className="flex flex-wrap gap-2 mb-4">
                         {(quiz.options && quiz.options.length>0 ? quiz.options : (defaultOptions[quiz.key_to_collect as string]||[])).map((o,i)=> (
-                          <Button key={i} variant={selectedOpt===o ? "default" : "outline"} size="sm" className="border-gray-200 transition-all duration-200 ease-out" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }}>
+                          <Button key={i} variant={selectedOpt===o ? "default" : "outline"} size="sm" className="border-gray-200 transition-all duration-200 ease-out focus-visible:ring-2 focus-visible:ring-gray-300" onClick={()=>{ setSelectedOpt(o); setCustomOpt(o); }}>
                             {optionLabel(quiz.key_to_collect as string, o)}
                           </Button>
                         ))}
@@ -425,9 +414,9 @@ export default function UserBookingPage() {
                               aria-pressed={on}
                               variant={on ? "default" : "outline"}
                               size="sm"
-                              className={`${on ? 'ring-2 ring-gray-300 shadow-sm scale-[1.02]' : 'hover:bg-gray-50'} border-gray-200 transition-all duration-200 ease-out active:scale-95`}
+                              className={`${on ? 'ring-2 ring-gray-300 shadow-sm scale-[1.02]' : 'hover:bg-gray-50'} border-gray-200 transition-all duration-200 ease-out active:scale-95 focus-visible:ring-2 focus-visible:ring-gray-300`}
                               onClick={()=>{
-                                setSelectedAmenities(prev => on ? prev.filter(x=>x!==o) : [...prev, o])
+                              setSelectedAmenities(prev => on ? prev.filter(x=>x!==o) : [...prev, o])
                               }}
                             >
                               {o}
@@ -470,6 +459,21 @@ export default function UserBookingPage() {
                     )}
                   </CardContent>
                 </Card>
+              </div>
+            )}
+            {/* Typing indicator moved below quiz to avoid covering */}
+            {loading && (!quiz || !quiz.quiz_completed) && (
+              <div className="flex items-end gap-3 transition-all duration-300 ease-out">
+                <Avatar className="w-8 h-8 shrink-0">
+                  <AvatarFallback className="bg-gray-100 text-gray-600 border border-gray-200">
+                    <Bot className="w-4 h-4" />
+                  </AvatarFallback>
+                </Avatar>
+                <div className="bg-white text-gray-900 border border-gray-200 px-4 py-3 rounded-2xl shadow-sm inline-flex items-center gap-2 transition-all duration-300 ease-out">
+                  <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce [animation-delay:-0.2s]"></span>
+                  <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce"></span>
+                  <span className="w-2 h-2 rounded-full bg-gray-400 animate-bounce [animation-delay:0.2s]"></span>
+                </div>
               </div>
             )}
 
@@ -581,13 +585,12 @@ export default function UserBookingPage() {
                 />
               </div>
               <div>
-              <Label htmlFor="check_in_date">Ngày check-in</Label>
-              <Input 
-                id="check_in_date"
-                type="date" 
-                value={currentParams.check_in_date||''} 
-                onChange={(e: React.ChangeEvent<HTMLInputElement>)=>setCurrentParams({ ...currentParams, check_in_date: e.target.value })} 
-              />
+                <Label htmlFor="check_in_date">Ngày check-in</Label>
+              <DatePicker
+                  id="check_in_date"
+                value={currentParams.check_in_date ? new Date(currentParams.check_in_date) : undefined}
+                onChange={(d)=>setCurrentParams({ ...currentParams, check_in_date: d ? d.toISOString().slice(0,10) : '' })}
+                />
               </div>
               <div>
                 <Label htmlFor="duration">Số đêm</Label>
