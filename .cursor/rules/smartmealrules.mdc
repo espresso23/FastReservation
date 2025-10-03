@@ -1,0 +1,51 @@
+---
+alwaysApply: false
+---
+Bạn đang làm việc trong dự án SmartMeal – AI Kitchen Assistant. 
+Ngữ cảnh dự án và các domain rules đã được định nghĩa trong `.cursor/rules.yaml`. 
+Hãy tuân thủ đúng rules đó (không invent thêm field).
+
+Bước 1: Xác nhận hiểu ngữ cảnh
+- SmartMeal = ứng dụng trợ lý bếp thông minh (OCR bill → Pantry → Recipe RAG → Planner → Reminder/Shopping).
+- Tech stack:
+  • FastAPI orchestrator (Python)
+  • Spring Boot service (Inventory + Recipe, JPA, Postgres)
+  • Workers (Python OCR/Crawler/Reminder)
+  • Frontend (Flutter)
+- Core tables: ingredients, pantry_batches, recipes, recipe_ingredients, recipe_embeddings, meal_plans, meal_items, pantry_reservations, shopping_lists, consumption_log.
+
+Bước 2: Viết module Spring Boot InventoryService
+Yêu cầu:
+- File: `services-spring/src/main/java/com/smartmeal/inventory/InventoryService.java`
+- API endpoints:
+  1) POST `/svc/inventory/batch`
+     - Input: JSON array pantry batches từ OCR Worker
+       [
+         {"name":"ốc bưu thịt","qty":272,"unit":"g","expireDate":"2025-10-17","cookable":true,"food_group":"meat_seafood"},
+         {"name":"bánh oreo","qty":1,"unit":"goi","expireDate":null,"cookable":false,"food_group":"snack_sweet"}
+       ]
+     - Behavior:
+       • Upsert ingredient (by normalized name).
+       • Insert new pantry_batch.
+       • Enforce constraint: cookable=true => expire_date NOT NULL (≤ today+14d); cookable=false => expire_date NULL.
+       • Return summary {added, ignored_non_food[], snacks[], expiringSoon[]}.
+  2) GET `/svc/inventory/snapshot`
+     - Output: JSON pantry items {ingredient_name, qty, unit, expireDate, cookable}
+     - Only include is_food=true.
+
+Bước 3: Sinh code
+- Entity: `Ingredient`, `PantryBatch` (theo rules .cursor/rules.yaml).
+- Repository: JPA interfaces cho IngredientRepo, PantryBatchRepo.
+- Service: InventoryService (saveBatch, getSnapshot).
+- Controller: InventoryController expose 2 endpoint trên.
+- Trả về JSON schema chuẩn (Jackson).
+
+Bước 4: Kèm ví dụ
+- Input JSON (POST batch)
+- Output JSON (response summary)
+- Output JSON (GET snapshot)
+
+⚠️ Lưu ý: 
+- Không thêm field ngoài schema định nghĩa trong rules.
+- Phải include createdAt/updatedAt fields (với @PrePersist/@PreUpdate).
+- Phải enforce constraint cookable/expire_date.

@@ -11,7 +11,33 @@ import { Avatar, AvatarFallback } from '../components/ui/avatar'
 import { Label } from '../components/ui/label'
 import { Send, Bot, User, Sparkles } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
-// Popover no longer used directly here after switching DatePicker to icon trigger
+
+// Import utilities
+import {
+  // Agent API
+  callAgentChat,
+  convertAgentResultsToSuggestions,
+  createSessionId,
+  updateUserProfileFromAgent,
+  buildAgentContext,
+  type AgentChatRequest,
+  
+  // Text processing
+  parseParametersFromPrompt,
+  humanizeParameterValue,
+  getParameterLabel,
+  
+  // Option labels
+  defaultOptions,
+  priceRangeOptions,
+  getOptionLabel,
+  getRelevanceScoreColor,
+  getRelevanceScoreLabel,
+  
+  // Validation (for future use)
+  // validateBookingParams,
+  // sanitizeInput
+} from '../utils'
 
 export default function UserBookingPage() {
   const { user } = useAuth()
@@ -26,33 +52,93 @@ export default function UserBookingPage() {
   const [selectedAmenities, setSelectedAmenities] = useState<string[]>([])
   const [selectedImages, setSelectedImages] = useState<{url:string,label:string,params?:Record<string,any>}[]>([])
 
-  type ChatMessage = { role: 'assistant' | 'user', text: string }
+  // Agent system state
+  const [sessionId] = useState(createSessionId)
+  const [userProfile, setUserProfile] = useState<AgentChatRequest['user_profile']>({
+    preferences: {},
+    history: [],
+    preferred_cities: [],
+    preferred_amenities: [],
+    travel_companion: undefined
+  })
+  const [agentMode, setAgentMode] = useState<'quiz' | 'agent'>('quiz') // Toggle between old quiz and new agent
+
+  type ChatMessage = { role: 'assistant' | 'user', text: string, timestamp?: Date }
   const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'assistant', text: 'Xin chào! Hãy mô tả ngắn gọn nhu cầu đặt chỗ của bạn.' }
+    { role: 'assistant', text: 'Xin chào! Tôi là trợ lý AI thông minh. Hãy mô tả nhu cầu đặt chỗ của bạn, tôi sẽ tìm kiếm và đề xuất những lựa chọn tốt nhất.', timestamp: new Date() }
   ])
   // Ghi nhớ các key đã hỏi để giảm hỏi lặp
   const [askedKeys, setAskedKeys] = useState<Set<string>>(new Set())
 
-  // Fallback tag choices nếu BE không gửi options
-  const defaultOptions: Record<string, string[]> = {
-    establishment_type: ['HOTEL','RESTAURANT'],
-    travel_companion: ['single','couple','family','friends','team','business'],
-    amenities_priority: [
-      'Hồ bơi','Spa','Bãi đậu xe','Gym','Buffet sáng','Gần biển','Wifi','Lễ tân 24/7','Đưa đón sân bay',
-      'Pet-friendly','Phòng gia đình','Không hút thuốc','Bồn tắm','View biển','View thành phố','Gần trung tâm',
-      'Ban công','Cửa sổ','Giặt là','Thang máy','Romantic','Quiet','Lively','Luxury','Nature','Cozy','Modern','Classic'
-    ],
-    duration: ['1','2','3','4','5','6','7','8','9','10'],
-    has_balcony: ['yes','no'],
-    num_guests: ['single','couple','3','4','5','6','7','8','9','10']
-  }
 
-  const send = async (override?: { params?: Record<string, any>, prompt?: string, auto?: boolean }) => {
+
+  const send = async (override?: { params?: Record<string, any>, prompt?: string, auto?: boolean, mode?: 'quiz' | 'agent' }) => {
     setLoading(true); setMsg(null)
     try {
       const pmt = (override?.prompt ?? prompt) || ''
       let paramsToSend = override?.params ?? currentParams
       let userMsgAppended = false
+      const useMode = override?.mode || agentMode
+
+      // Agent mode - direct conversation
+      if (useMode === 'agent') {
+        if (pmt.trim() && !userMsgAppended) {
+          setMessages(prev => [...prev, { role: 'user', text: pmt.trim(), timestamp: new Date() }])
+          userMsgAppended = true
+        }
+
+        try {
+          const agentResponse = await callAgentChat(pmt, sessionId, userProfile, buildAgentContext(paramsToSend))
+          
+          if (agentResponse.success && agentResponse.results.length > 0) {
+            // Convert agent results to suggestions
+            const convertedSuggestions = convertAgentResultsToSuggestions(agentResponse.results)
+            setSuggestions(convertedSuggestions)
+            setQuiz(null)
+            
+            // Add agent response to chat
+            setMessages(prev => [
+              ...prev,
+              { 
+                role: 'assistant', 
+                text: agentResponse.explanation || `Tôi đã tìm thấy ${agentResponse.results.length} lựa chọn phù hợp với yêu cầu của bạn.`,
+                timestamp: new Date()
+              }
+            ])
+          } else {
+            // No results or unsuccessful
+            setSuggestions([])
+            setQuiz(null)
+            setMessages(prev => [
+              ...prev,
+              { 
+                role: 'assistant', 
+                text: agentResponse.explanation || 'Tôi chưa tìm thấy kết quả phù hợp. Bạn có thể thử mô tả chi tiết hơn hoặc nới lỏng một số tiêu chí.',
+                timestamp: new Date()
+              }
+            ])
+          }
+
+          // Update user profile if agent provided insights
+          if (agentResponse.metadata?.user_insights) {
+            setUserProfile(prev => updateUserProfileFromAgent(prev, agentResponse.metadata))
+          }
+
+          return
+        } catch (error) {
+          console.error('Agent API error:', error)
+          // Fallback to quiz mode on agent error
+          setMessages(prev => [
+            ...prev,
+            { 
+              role: 'assistant', 
+              text: 'Hệ thống AI đang gặp sự cố. Tôi sẽ chuyển sang chế độ hỏi đáp truyền thống để hỗ trợ bạn.',
+              timestamp: new Date()
+            }
+          ])
+          setAgentMode('quiz')
+        }
+      }
       
       // Reset state if user is starting a new search (not auto-skip)
       if (!override?.auto && pmt.trim() && ((quiz && quiz.quiz_completed) || (suggestions && suggestions.length >= 0))) {
@@ -76,89 +162,12 @@ export default function UserBookingPage() {
         setMessages(prev => [...prev, { role: 'user', text: pmt }])
         userMsgAppended = true
       }
-      // Client-side quick inference to avoid re-asking basic facts
-      const strip = (s:string) => (
-        s
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '') // remove accents
-          .replace(/đ/g, 'd').replace(/Đ/g, 'd')
-          .replace(/[^a-zA-Z0-9\s]/g, ' ') // punctuation to spaces
-          .replace(/\s+/g, ' ') // collapse
-          .trim()
-          .toLowerCase()
-      )
-      const inferCity = (text:string): string | null => {
-        const t = strip(text)
-        const pairs: [string, string][] = [
-          ['da nang','Đà Nẵng'], ['danang','Đà Nẵng'], ['da-nang','Đà Nẵng'], ['da_nang','Đà Nẵng'], ['dn','Đà Nẵng'],
-          ['ha noi','Hà Nội'], ['hanoi','Hà Nội'],
-          ['ho chi minh','Hồ Chí Minh'], ['tphcm','Hồ Chí Minh'], ['hcm','Hồ Chí Minh'], ['sai gon','Hồ Chí Minh'], ['saigon','Hồ Chí Minh'],
-          ['nha trang','Nha Trang'], ['nhatrang','Nha Trang'],
-          ['da lat','Đà Lạt'], ['dalat','Đà Lạt']
-        ]
-        for (const [alias, disp] of pairs.sort((a,b)=>b[0].length-a[0].length)) {
-          if (t.includes(alias)) return disp
-        }
-        return null
-      }
-      const inferType = (text:string): 'HOTEL'|'RESTAURANT'|null => {
-        const lc = strip(text)
-        if (lc.includes('khach san') || lc.includes('hotel')) return 'HOTEL'
-        if (lc.includes('nha hang') || lc.includes('restaurant')) return 'RESTAURANT'
-        return null
-      }
-      const parseFromPrompt = (text: string): Record<string, any> => {
-        const out: Record<string, any> = {}
-        const city = inferCity(text); if (city) out.city = city
-        // YYYY-MM-DD
-        const dateM = text.match(/(20\d{2}-\d{2}-\d{2})/)
-        if (dateM) out.check_in_date = dateM[1]
-        // duration: "2 đêm" or "2 ngay"
-        const s = strip(text)
-        const durM = s.match(/(\d+)\s*(dem|dems|ngay)/)
-        if (durM) out.duration = Number(durM[1])
-        // max_price: support 300k, 0.5tr, 1 trieu, 300.000d, 300000 vnd
-        try {
-          const s2 = text.toLowerCase().replace(/,/g,'.')
-          let price: number | null = null
-          let m1 = s2.match(/(\d+(?:\.\d+)?)\s*(k|nghin|nghìn|ngan|ngàn|tr|trieu|triệu|m)\b/)
-          if (m1) {
-            const val = parseFloat(m1[1])
-            const unit = m1[2]
-            if (['k','nghin','nghìn','ngan','ngàn'].includes(unit)) price = Math.round(val * 1000)
-            else price = Math.round(val * 1000000)
-          } else {
-            let m2 = s2.match(/(\d{1,3}(?:[\.\s]\d{3})+|\d+)\s*(đ|d|vnd)\b/)
-            if (m2) {
-              price = parseInt(m2[1].replace(/\./g,'').replace(/\s/g,''))
-            }
-          }
-          if (price && price>0) out.max_price = price
-        } catch {}
-        // amenities and balcony
-        const amens: string[] = []
-        if (s.includes('gym')) amens.push('Gym')
-        if (s.includes('ho boi') || s.includes('hoboi') || s.includes('pool')) amens.push('Hồ bơi')
-        if (s.includes('spa')) amens.push('Spa')
-        if (s.includes('bai do xe') || s.includes('giu xe') || s.includes('parking')) amens.push('Bãi đậu xe')
-        if (s.includes('gan bien') || s.includes('ganbien') || s.includes('beach')) amens.push('Gần biển')
-        if (amens.length) out.amenities_priority = amens.join(', ')
-        if (s.includes('ban cong')) out.has_balcony = 'yes'
-        const t = inferType(text); if (t) out.establishment_type = t
-        return out
-      }
       // Parse immediately at the very first prompt
-      const parsed = parseFromPrompt(pmt)
+      const parsed = parseParametersFromPrompt(pmt)
       if (Object.keys(parsed).length) {
         paramsToSend = { ...paramsToSend, ...parsed }
         setCurrentParams(prev => ({ ...prev, ...parsed }))
       }
-      // Fill city/type if missing
-      const localCity = (!paramsToSend.city) ? inferCity(pmt) : null
-      const localType = (!paramsToSend.establishment_type) ? inferType(pmt) : null
-      if (localCity || localType) paramsToSend = { ...paramsToSend }
-      if (localCity) paramsToSend.city = localCity
-      if (localType) paramsToSend.establishment_type = localType
       // Tránh nhân đôi tin nhắn người dùng
       if (pmt.trim() && !userMsgAppended) {
         setMessages(prev => [...prev, { role: 'user', text: pmt.trim() }])
@@ -244,54 +253,6 @@ export default function UserBookingPage() {
     } finally { setLoading(false) }
   }
 
-  const keyLabel = (k?: string) => {
-    switch (k) {
-      case 'establishment_type': return 'Loại cơ sở';
-      case 'city': return 'Thành phố';
-      case 'check_in_date': return 'Ngày nhận';
-      case 'duration': return 'Số đêm';
-      case 'max_price': return 'Ngân sách tối đa (VND)';
-      case 'travel_companion': return 'Đi cùng ai';
-      case 'amenities_priority': return 'Tiện ích ưu tiên';
-      case 'has_balcony': return 'Có ban công?';
-      case 'num_guests': return 'Số người';
-      default: return k || ''
-    }
-  }
-
-  const optionLabel = (key: string, v: string) => {
-    if (key === 'establishment_type') {
-      if (v.toUpperCase() === 'HOTEL') return 'Khách sạn'
-      if (v.toUpperCase() === 'RESTAURANT') return 'Nhà hàng'
-    }
-    if (key === 'travel_companion') {
-      const m: Record<string,string> = { single: 'Một mình', couple: 'Cặp đôi', family: 'Gia đình', friends: 'Bạn bè' }
-      return m[v.toLowerCase()] || v
-    }
-    if (key === 'has_balcony') {
-      if ((v || '').toLowerCase() === 'yes') return 'Có'
-      if ((v || '').toLowerCase() === 'no') return 'Không'
-    }
-    return v
-  }
-
-  const humanizeValue = (k: string, v: string) => {
-    if (k === 'establishment_type') {
-      return optionLabel(k, v)
-    }
-    if (k === 'num_guests') {
-      const vv = (v || '').toLowerCase()
-      if (vv === 'single') return '1 người'
-      if (vv === 'couple') return '2 người'
-      const n = Number(vv)
-      if (!isNaN(n) && n > 0) return `${n} người`
-    }
-    if (k === 'has_balcony') {
-      if ((v || '').toLowerCase() === 'yes') return 'Có'
-      if ((v || '').toLowerCase() === 'no') return 'Không'
-    }
-    return v
-  }
 
   const renderInputForKey = (k?: string) => {
     if (!k) return null
@@ -388,7 +349,7 @@ export default function UserBookingPage() {
     const nextParams = { ...currentParams, ...extra, [k]: k==='duration'||k==='max_price' ? Number(val) : val }
     setCurrentParams(nextParams)
     // Tùy biến câu trả lời hiển thị cho bước ngày: nêu rõ ngày đến và số đêm
-    let userText = `Tôi chọn ${keyLabel(k)}: ${humanizeValue(k, val)}`
+    let userText = `Tôi chọn ${getParameterLabel(k)}: ${humanizeParameterValue(k, val)}`
     if (k === 'check_in_date') {
       const nights = Number(nextParams.duration || 0)
       if (!isNaN(nights) && nights > 0) {
@@ -431,6 +392,58 @@ export default function UserBookingPage() {
         <div className="text-center">
           <h1 className="text-2xl font-bold text-gray-900 mb-1">Trợ lý đặt chỗ AI</h1>
           <p className="text-gray-600 text-sm">Hãy mô tả nhu cầu của bạn, tôi sẽ giúp bạn tìm chỗ phù hợp nhất</p>
+          
+          {/* Mode Toggle */}
+          <div className="mt-4 flex justify-center">
+            <div className="bg-gray-100 rounded-lg p-1 flex gap-1">
+              <Button
+                variant={agentMode === 'quiz' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => {
+                  setAgentMode('quiz')
+                  // Reset state when switching modes
+                  setQuiz(null)
+                  setSuggestions(null)
+                  setCurrentParams({})
+                  setSelectedOpt('')
+                  setCustomOpt('')
+                  setSelectedAmenities([])
+                  setSelectedImages([])
+                  setMessages(prev => [...prev, { 
+                    role: 'assistant', 
+                    text: 'Đã chuyển sang chế độ hỏi đáp. Tôi sẽ hỏi bạn từng bước để hiểu rõ nhu cầu.',
+                    timestamp: new Date()
+                  }])
+                }}
+                className={`px-4 py-2 text-sm ${agentMode === 'quiz' ? 'bg-white shadow-sm' : 'hover:bg-gray-50'}`}
+              >
+                📋 Chế độ Quiz
+              </Button>
+              <Button
+                variant={agentMode === 'agent' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => {
+                  setAgentMode('agent')
+                  // Reset state when switching modes
+                  setQuiz(null)
+                  setSuggestions(null)
+                  setCurrentParams({})
+                  setSelectedOpt('')
+                  setCustomOpt('')
+                  setSelectedAmenities([])
+                  setSelectedImages([])
+                  setMessages(prev => [...prev, { 
+                    role: 'assistant', 
+                    text: 'Đã chuyển sang chế độ AI thông minh. Bạn có thể nói chuyện tự nhiên, tôi sẽ hiểu và tìm kiếm ngay.',
+                    timestamp: new Date()
+                  }])
+                }}
+                className={`px-4 py-2 text-sm ${agentMode === 'agent' ? 'bg-white shadow-sm' : 'hover:bg-gray-50'}`}
+              >
+                🤖 AI Thông minh
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
       
@@ -472,7 +485,7 @@ export default function UserBookingPage() {
                   <CardContent className="p-4 bg-white">
                     {/* Heading */}
                     <div className="mb-4">
-                      <CardTitle className="text-lg text-gray-900 mb-1">{keyLabel(quiz.key_to_collect)}</CardTitle>
+                      <CardTitle className="text-lg text-gray-900 mb-1">{getParameterLabel(quiz.key_to_collect)}</CardTitle>
                       <CardDescription className="text-gray-600">Chọn một trong các gợi ý bên dưới hoặc nhập thủ công.</CardDescription>
                     </div>
                     {/* Options as images */}
@@ -517,7 +530,7 @@ export default function UserBookingPage() {
                               setCustomOpt(o);
                             }
                           }}>
-                            {optionLabel(quiz.key_to_collect as string, o)}
+                            {getOptionLabel(quiz.key_to_collect as string, o)}
                           </Button>
                         ))}
                       </div>
@@ -525,13 +538,7 @@ export default function UserBookingPage() {
                     {/* Quick price chips for max_price */}
                     {quiz.key_to_collect === 'max_price' && (
                       <div className="flex flex-wrap gap-2 mb-4">
-                        {[
-                          { label: '100k - 300k', value: 300000 },
-                          { label: '500k - 1 triệu', value: 1000000 },
-                          { label: '1 - 2 triệu', value: 2000000 },
-                          { label: '2 - 3 triệu', value: 3000000 },
-                          { label: '3 - 5 triệu', value: 5000000 }
-                        ].map((p, i) => (
+                        {priceRangeOptions.map((p, i) => (
                           <Button
                             key={`pr-${i}`}
                             variant={Number(customOpt)===p.value ? 'default' : 'outline'}
@@ -586,7 +593,7 @@ export default function UserBookingPage() {
                     <div className="mt-4 flex flex-wrap gap-2">
                       {Object.entries(currentParams).map(([k,v])=> (
                         <Badge key={k} variant="secondary" className="text-xs bg-gray-100 text-gray-700 border border-gray-200">
-                          {keyLabel(k)}: {String(v)}
+                          {getParameterLabel(k)}: {humanizeParameterValue(k, String(v))}
                         </Badge>
                       ))}
                     </div>
@@ -626,6 +633,15 @@ export default function UserBookingPage() {
                 <div className="text-sm font-medium text-gray-900 mb-2">
                   {suggestions.length > 0 ? `Mình có ${suggestions.length} gợi ý dành cho bạn:` : 'Chưa tìm thấy kết quả phù hợp.'}
                 </div>
+                
+                {/* Agent mode info */}
+                {agentMode === 'agent' && suggestions.length > 0 && (suggestions[0] as any).relevanceScore && (
+                  <div className="mb-2 flex gap-2 text-xs text-gray-500">
+                    <Badge variant="outline" className={`text-xs ${getRelevanceScoreColor((suggestions[0] as any).relevanceScore)}`}>
+                      {getRelevanceScoreLabel((suggestions[0] as any).relevanceScore)}: {Math.round((suggestions[0] as any).relevanceScore * 100)}%
+                    </Badge>
+                  </div>
+                )}
                 {suggestions.length > 0 ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                     {suggestions.slice(0,3).map(s => (
@@ -641,6 +657,14 @@ export default function UserBookingPage() {
                           <div className="mt-1 text-sm text-gray-700">Loại: <span className="font-medium">{s.itemType || s.floorArea}</span></div>
                           <div className="text-sm text-gray-900">Giá: {s.finalPrice?.toLocaleString()} đ</div>
                           <div className="text-xs text-gray-600">Còn: {s.unitsAvailable}</div>
+                          
+                          {/* Agent explanation */}
+                          {(s as any).explanation && agentMode === 'agent' && (
+                            <div className="mt-2 text-xs text-gray-500 italic border-l-2 border-gray-200 pl-2">
+                              {(s as any).explanation}
+                            </div>
+                          )}
+                          
                           <div className="mt-2 flex items-center gap-2">
                             <Button size="sm" className="bg-gray-900 hover:bg-gray-800 text-white transition-colors duration-200" onClick={()=>book(s)} disabled={loading}>Book ngay</Button>
                             <Button size="sm" variant="outline" className="border-gray-200 transition-colors duration-200" asChild>
@@ -680,13 +704,16 @@ export default function UserBookingPage() {
       </Card>
       </div>
 
-      {/* Input bar: chỉ hiển thị khi chưa vào quiz, hoặc quiz đã hoàn thành */}
-      {(!quiz || quiz.quiz_completed) && (
+      {/* Input bar: hiển thị khi ở agent mode hoặc quiz completed */}
+      {(agentMode === 'agent' || !quiz || quiz.quiz_completed) && (
         <div className="flex-shrink-0 p-6 border-t border-gray-200 bg-white">
           <div className="relative max-w-3xl mx-auto">
             <Input
               className="w-full h-12 rounded-full px-4 pr-14 shadow-sm border-gray-200 focus:border-gray-400"
-              placeholder="Nhập yêu cầu của bạn..."
+              placeholder={agentMode === 'agent' 
+                ? "Nói chuyện tự nhiên với AI (ví dụ: 'Tôi muốn đi Đà Nẵng 2 đêm, có hồ bơi, ngân sách 2 triệu')" 
+                : "Nhập yêu cầu của bạn..."
+              }
               value={prompt}
               onChange={(e: React.ChangeEvent<HTMLInputElement>)=>setPrompt(e.target.value)}
               onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>)=>{ if (e.key==='Enter' && !e.shiftKey && !loading) { e.preventDefault(); send() } }}

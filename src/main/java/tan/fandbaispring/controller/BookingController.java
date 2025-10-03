@@ -283,7 +283,7 @@ public class BookingController {
                     .toList();
         }
 
-        // Xếp hạng lai: ưu tiên còn chỗ theo booking, giá trong ngân sách, khớp tiện ích (nếu có)
+        // Smart Ranking Algorithm: ưu tiên availability, price, amenities match
         final List<String> amenNeed = new ArrayList<>();
         try {
             Object am = finalParams.get("amenities_priority");
@@ -293,30 +293,276 @@ public class BookingController {
                 }
             }
         } catch (Exception ignore) {}
+        
         final Long budget = maxPrice;
+        final Integer guestCount = numGuests;
+        
         // Ensure the list is mutable before sorting (avoid UnsupportedOperationException)
         if (!(finalSuggestions instanceof java.util.ArrayList)) {
             finalSuggestions = new ArrayList<>(finalSuggestions);
         }
+        
+        // Advanced Smart Ranking Algorithm
         finalSuggestions.sort((a,b)->{
             int scoreA = 0, scoreB = 0;
-            // số lượng loại khả dụng
-            scoreA += a.getUnitsAvailable()>0 ? 3 : 0;
-            scoreB += b.getUnitsAvailable()>0 ? 3 : 0;
-            // price within budget
-            scoreA += (a.getFinalPrice()!=null && a.getFinalPrice()<=budget) ? 2 : 0;
-            scoreB += (b.getFinalPrice()!=null && b.getFinalPrice()<=budget) ? 2 : 0;
-            // simple amenity match by name token
-            int addA = 0, addB = 0;
-            for (String need: amenNeed){
-                if (a.getItemType()!=null && a.getItemType().toLowerCase().contains(need)) addA++;
-                if (b.getItemType()!=null && b.getItemType().toLowerCase().contains(need)) addB++;
+            
+            // 1. Availability Priority (40% weight)
+            if (a.getUnitsAvailable() > 0) scoreA += 40;
+            if (b.getUnitsAvailable() > 0) scoreB += 40;
+            
+            // 2. Price within budget (30% weight)
+            if (a.getFinalPrice() != null && a.getFinalPrice() <= budget) scoreA += 30;
+            if (b.getFinalPrice() != null && b.getFinalPrice() <= budget) scoreB += 30;
+            
+            // 3. Price competitiveness (20% weight) - cheaper is better
+            if (a.getFinalPrice() != null && b.getFinalPrice() != null) {
+                if (a.getFinalPrice() < b.getFinalPrice()) scoreA += 20;
+                else if (b.getFinalPrice() < a.getFinalPrice()) scoreB += 20;
             }
-            scoreA += addA; scoreB += addB;
+            
+            // 4. Amenities match (10% weight)
+            int amenA = 0, amenB = 0;
+            for (String need: amenNeed){
+                if (a.getItemType() != null && a.getItemType().toLowerCase().contains(need)) amenA++;
+                if (b.getItemType() != null && b.getItemType().toLowerCase().contains(need)) amenB++;
+            }
+            scoreA += amenA * 10;
+            scoreB += amenB * 10;
+            
+            // 5. Star rating bonus
+            if (a.getStarRating() >= 4) scoreA += 5;
+            if (b.getStarRating() >= 4) scoreB += 5;
+            
             return Integer.compare(scoreB, scoreA);
         });
+        
+        // Chỉ trả về top 3 recommendations
+        finalSuggestions = finalSuggestions.stream().limit(3).collect(Collectors.toList());
 
         return ResponseEntity.ok(finalSuggestions);
+    }
+
+    /**
+     * API Auto Booking Flow - Quy trình đặt phòng hoàn toàn tự động
+     * @param request Chứa prompt và currentParams
+     * @return AutoBookingResponse với quiz hoặc recommendations
+     */
+    @PostMapping("/auto-booking")
+    public ResponseEntity<?> autoBookingFlow(@RequestBody QuizRequestDTO request) {
+        
+        // 1. Generate Quiz với AI thông minh
+        QuizResponseDTO quizResponse = aiService.generateQuiz(request);
+        
+        // 2. Nếu quiz chưa hoàn thành, trả về câu hỏi tiếp theo với options
+        if (!quizResponse.isQuizCompleted()) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("type", "quiz");
+            response.put("quiz", quizResponse);
+            response.put("message", "Vui lòng trả lời câu hỏi để tiếp tục");
+            return ResponseEntity.ok(response);
+        }
+        
+        // 3. Nếu quiz hoàn thành, thực hiện tìm kiếm và ranking thông minh
+        try {
+            Map<String, Object> finalParams = quizResponse.getFinalParams();
+            
+            // Chuẩn hóa city cho RAG search
+            Map<String, Object> ragParams = new HashMap<>(finalParams);
+            Object cityObjForRag = finalParams.get("city");
+            if (cityObjForRag != null) {
+                String canonical = canonicalCity(normalize(String.valueOf(cityObjForRag)));
+                String displayCity = toDisplayCity(canonical);
+                if (displayCity != null && !displayCity.isBlank()) {
+                    ragParams.put("city", displayCity);
+                }
+            }
+            
+            // RAG Search với AI
+            List<SearchResultDTO> ragResults = aiService.performRagSearch(ragParams);
+            
+            // Lọc và ranking thông minh
+            List<FinalResultResponse> recommendations = processSmartRecommendations(
+                ragResults, finalParams, quizResponse
+            );
+            
+            // 4. Trả về top 3 recommendations với thông tin đầy đủ
+            Map<String, Object> response = new HashMap<>();
+            response.put("type", "recommendations");
+            response.put("recommendations", recommendations);
+            response.put("userParams", finalParams);
+            response.put("message", "Đây là 3 khách sạn phù hợp nhất với yêu cầu của bạn");
+            
+            return ResponseEntity.ok(response);
+            
+        } catch (Exception e) {
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("type", "error");
+            errorResponse.put("message", "Có lỗi xảy ra khi tìm kiếm: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+        }
+    }
+    
+    /**
+     * Xử lý smart recommendations với availability checking
+     */
+    private List<FinalResultResponse> processSmartRecommendations(
+            List<SearchResultDTO> ragResults, 
+            Map<String, Object> finalParams,
+            QuizResponseDTO quizResponse) {
+        
+        List<String> establishmentIds = ragResults.stream()
+                .map(SearchResultDTO::getEstablishmentId)
+                .collect(Collectors.toList());
+        
+        Long maxPrice = Long.valueOf(finalParams.get("max_price").toString());
+        LocalDate bookingDate = LocalDate.parse((String) finalParams.get("check_in_date"));
+        Integer numGuests = inferNumGuests(finalParams.get("travel_companion"));
+        String typeParam = getEstablishmentType(finalParams);
+        
+        // Lấy establishments từ database
+        List<Establishment> establishments = new ArrayList<>();
+        if (!establishmentIds.isEmpty()) {
+            establishmentRepo.findAllById(establishmentIds).forEach(establishments::add);
+        } else {
+            // Fallback search
+            String cityFilter = (String) finalParams.get("city");
+            establishments = establishmentRepo.findAll().stream()
+                    .filter(e -> cityMatches(e.getCity(), cityFilter))
+                    .collect(Collectors.toList());
+        }
+        
+        // Lọc theo type nếu có
+        if (typeParam != null && !typeParam.isBlank()) {
+            establishments = establishments.stream()
+                    .filter(e -> e.getType() != null && e.getType().name().equalsIgnoreCase(typeParam))
+                    .collect(Collectors.toList());
+        }
+        
+        List<FinalResultResponse> recommendations = new ArrayList<>();
+        
+        for (Establishment establishment : establishments) {
+            List<UnitType> unitTypes = unitTypeRepo.findByEstablishmentIdAndActiveTrue(establishment.getId());
+            
+            for (UnitType unitType : unitTypes) {
+                // Lọc theo capacity
+                if (numGuests != null && unitType.getCapacity() != null && 
+                    unitType.getCapacity() > 0 && unitType.getCapacity() < numGuests) {
+                    continue;
+                }
+                
+                // Lọc theo giá
+                if (unitType.getBasePrice() != null && unitType.getBasePrice() > maxPrice) {
+                    continue;
+                }
+                
+                // Kiểm tra availability
+                int totalUnits = (unitType.getTotalUnits() != null && unitType.getTotalUnits() > 0) 
+                    ? unitType.getTotalUnits() : 9999;
+                
+                int overlaps = (int) bookingRepo.findByPartnerId(establishment.getOwnerId()).stream()
+                        .filter(b -> b.getEstablishmentId() != null && b.getEstablishmentId().equals(establishment.getId()))
+                        .filter(b -> b.getStartDate() != null && b.getStartDate().equals(bookingDate))
+                        .filter(b -> {
+                            String bookedType = b.getBookedItemType();
+                            String unitName = unitType.getName() != null ? unitType.getName() : "";
+                            String unitCode = unitType.getCode() != null ? unitType.getCode() : "";
+                            return bookedType != null && 
+                                   (bookedType.equalsIgnoreCase(unitName) || bookedType.equalsIgnoreCase(unitCode));
+                        })
+                        .count();
+                
+                int available = Math.max(0, totalUnits - overlaps);
+                
+                // Chỉ thêm nếu còn phòng trống
+                if (available > 0) {
+                    FinalResultResponse recommendation = new FinalResultResponse();
+                    recommendation.setEstablishmentId(establishment.getId());
+                    recommendation.setEstablishmentName(establishment.getName());
+                    recommendation.setCity(establishment.getCity());
+                    recommendation.setStarRating(establishment.getStarRating());
+                    recommendation.setImageUrlMain(establishment.getImageUrlMain());
+                    recommendation.setImageUrlsGallery(establishment.getImageUrlsGallery());
+                    recommendation.setItemType(unitType.getName() != null ? unitType.getName() : unitType.getCode());
+                    recommendation.setUnitsAvailable(available);
+                    recommendation.setFinalPrice(unitType.getBasePrice());
+                    
+                    recommendations.add(recommendation);
+                }
+            }
+        }
+        
+        // Apply smart ranking
+        return applySmartRanking(recommendations, finalParams);
+    }
+    
+    /**
+     * Infer số người từ travel_companion
+     */
+    private Integer inferNumGuests(Object companionVal) {
+        if (companionVal == null) return null;
+        
+        try {
+            String companion = String.valueOf(companionVal).trim().toLowerCase();
+            switch (companion) {
+                case "single": case "một mình": return 1;
+                case "couple": case "cặp đôi": return 2;
+                case "family": case "gia đình": return 4;
+                case "friends": case "bạn bè": return 3;
+                default: return Integer.parseInt(companion);
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    
+    /**
+     * Get establishment type từ params
+     */
+    private String getEstablishmentType(Map<String, Object> finalParams) {
+        try {
+            Object type = finalParams.get("establishment_type");
+            return type != null ? String.valueOf(type).trim() : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    
+    /**
+     * Apply smart ranking algorithm
+     */
+    private List<FinalResultResponse> applySmartRanking(
+            List<FinalResultResponse> recommendations, 
+            Map<String, Object> finalParams) {
+        
+        Long budget = Long.valueOf(finalParams.get("max_price").toString());
+        
+        // Smart ranking
+        recommendations.sort((a, b) -> {
+            int scoreA = 0, scoreB = 0;
+            
+            // Availability (40%)
+            if (a.getUnitsAvailable() > 0) scoreA += 40;
+            if (b.getUnitsAvailable() > 0) scoreB += 40;
+            
+            // Price within budget (30%)
+            if (a.getFinalPrice() != null && a.getFinalPrice() <= budget) scoreA += 30;
+            if (b.getFinalPrice() != null && b.getFinalPrice() <= budget) scoreB += 30;
+            
+            // Price competitiveness (20%)
+            if (a.getFinalPrice() != null && b.getFinalPrice() != null) {
+                if (a.getFinalPrice() < b.getFinalPrice()) scoreA += 20;
+                else if (b.getFinalPrice() < a.getFinalPrice()) scoreB += 20;
+            }
+            
+            // Star rating (10%)
+            if (a.getStarRating() >= 4) scoreA += 10;
+            if (b.getStarRating() >= 4) scoreB += 10;
+            
+            return Integer.compare(scoreB, scoreA);
+        });
+        
+        // Trả về top 3
+        return recommendations.stream().limit(3).collect(Collectors.toList());
     }
 
     // ------------------ HELPER: City matching with alias/diacritics ------------------

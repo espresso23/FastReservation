@@ -2,8 +2,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_chroma import Chroma
-from chromadb import PersistentClient
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 import json
@@ -12,11 +10,49 @@ import psycopg2
 from typing import Dict, Any, List, Optional
 import logging
 from dotenv import load_dotenv
-import unicodedata
 import warnings
-import re
-from datetime import datetime, timedelta
+import unicodedata
 from langchain_core._api import LangChainDeprecationWarning
+from pgvector_service import PgVectorService
+import sys
+import os
+
+# Import utils and agent packages directly from local ai-service folder
+try:
+    from utils import (
+        strip_accents, normalize_params, apply_defaults,
+        infer_city_from_text, detect_brand_name
+    )
+    from agent import RAGAgent, AgentOrchestrator
+    print("✅ Successfully imported utils and agent packages from ai-service")
+except ImportError as e:
+    print(f"Warning: Could not import utils/agent packages: {e}")
+    print("Running without agent functionality...")
+    
+    # Fallback functions
+    def strip_accents(text):
+        return unicodedata.normalize('NFD', text).encode('ascii', 'ignore').decode('utf-8').lower()
+    
+    def normalize_params(params, user_prompt=""):
+        return params or {}
+    
+    def apply_defaults(params):
+        return params or {}
+    
+    def infer_city_from_text(text):
+        return None
+    
+    def detect_brand_name(prompt, city, pgvector_service):
+        return None
+    
+    # Mock agent classes
+    class RAGAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+    
+    class AgentOrchestrator:
+        def __init__(self, *args, **kwargs):
+            pass
 warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
 
 # --- CẤU HÌNH ---
@@ -33,9 +69,9 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 # *** SỬA LỖI DB_CONFIG: Tách host và port để khớp với psycopg2 ***
-db_host, db_port = "localhost", 5432 # Mặc định
-if ":" in "localhost:5432":
-    db_host, db_port_str = "localhost:5432".split(":")
+db_host, db_port = "localhost", 5433 # PostgreSQL 18 port
+if ":" in "localhost:5433":
+    db_host, db_port_str = "localhost:5433".split(":")
     db_port = int(db_port_str)
 
 DB_CONFIG = {
@@ -46,12 +82,10 @@ DB_CONFIG = {
     "password": "root" 
 }
 
-CHROMA_PATH = "./chroma_db_gemini"
-
 # Khởi tạo LLM và Vector Store (có fallback)
 llm = None
 embeddings = None
-vectorstore = None
+pgvector_service = None
 try:
     # Thử model mới (tắt retry để không bị chờ backoff khi hết quota)
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0, max_retries=0)
@@ -66,16 +100,24 @@ except Exception as e1:
 
 try:
     embeddings = GoogleGenerativeAIEmbeddings(model="text-embedding-004")
-    chroma_client = PersistentClient(path=CHROMA_PATH)
-    vectorstore = Chroma(
-        collection_name="fast_planner_establishments",
-        embedding_function=embeddings,
-        client=chroma_client
-    )
+    pgvector_service = PgVectorService(DB_CONFIG)
 except Exception as e:
     logging.warning("Vector store/embeddings init failed: %s", getattr(e, "message", str(e)))
     embeddings = None
-    vectorstore = None
+    pgvector_service = None
+
+# Khởi tạo Agent system
+rag_agent = None
+agent_orchestrator = None
+if pgvector_service and embeddings:
+    try:
+        rag_agent = RAGAgent(pgvector_service, embeddings)
+        agent_orchestrator = AgentOrchestrator(pgvector_service, embeddings)
+        logging.info("Agent system initialized successfully")
+    except Exception as e:
+        logging.warning("Agent system init failed: %s", getattr(e, "message", str(e)))
+        rag_agent = None
+        agent_orchestrator = None
 
 
 # --- DTOs (Pydantic Models) ---
@@ -106,6 +148,45 @@ class QuizResponseModel(BaseModel):
     image_options: Optional[List[ImageOption]] = Field(default=None, description="Các lựa chọn dạng thẻ ảnh cho câu hỏi hiện tại")
     options: Optional[List[str]] = Field(default=None, description="Các lựa chọn dạng text/tag cho câu hỏi hiện tại")
 
+
+# Agent DTOs
+class AgentChatRequest(BaseModel):
+    message: str = Field(..., description="Tin nhắn từ user")
+    session_id: str = Field(..., description="Session ID để quản lý conversation")
+    user_profile: Optional[Dict[str, Any]] = Field(default=None, description="User profile và preferences")
+    context: Optional[Dict[str, Any]] = Field(default=None, description="Context bổ sung")
+
+class SearchResultResponse(BaseModel):
+    establishment_id: str
+    name: str
+    relevance_score: float
+    metadata: Dict[str, Any]
+    explanation: str
+
+class AgentChatResponse(BaseModel):
+    success: bool
+    results: List[SearchResultResponse]
+    intent: str
+    strategy_used: str
+    explanation: str
+    suggestions: List[str]
+    confidence: float
+    processing_time: float
+    metadata: Dict[str, Any]
+
+class AgentSearchRequest(BaseModel):
+    query: str = Field(..., description="Query tìm kiếm")
+    context: Optional[Dict[str, Any]] = Field(default=None, description="Context bổ sung")
+    strategy: Optional[str] = Field(default=None, description="Strategy tìm kiếm (semantic, hybrid, contextual)")
+
+class UserProfileRequest(BaseModel):
+    session_id: str = Field(..., description="Session ID")
+    preferences: Optional[Dict[str, Any]] = Field(default=None, description="User preferences")
+    budget_range: Optional[tuple] = Field(default=None, description="Budget range")
+    preferred_cities: Optional[List[str]] = Field(default=None, description="Preferred cities")
+    preferred_amenities: Optional[List[str]] = Field(default=None, description="Preferred amenities")
+    travel_companion: Optional[str] = Field(default=None, description="Travel companion type")
+
 # Danh sách tham số cốt lõi (dùng cho cả fallback)
 PARAM_ORDER = [
     "establishment_type",  # HOTEL | RESTAURANT (suy luận từ prompt nếu có)
@@ -126,41 +207,48 @@ def effective_param_order(final_params: Dict[str, Any]) -> list[str]:
         return list(PARAM_ORDER)
 
 FALLBACK_QUESTIONS = {
-    "establishment_type": "Ban muon tim Khach san (HOTEL) hay Nha hang (RESTAURANT)?",
-    "city": "Ban muon di o thanh pho nao?",
-    "check_in_date": "Ban du dinh ngay bat dau chuyen di la khi nao? (YYYY-MM-DD)",
-    "travel_companion": "Ban se di cung ai? (single, couple, family, friends hoac nhap so nguoi)",
-    "duration": "Thoi luong chuyen di bao lau? (so ngay)",
-    "max_price": "Ngan sach toi da cua ban la bao nhieu (VND)?",
-    "amenities_priority": "Ban uu tien tien ich nao? (vi du: ho boi, spa, bai do xe)"
+    "establishment_type": "Bạn muốn tìm loại cơ sở nào?",
+    "city": "Bạn muốn đi ở thành phố nào?",
+    "check_in_date": "Ngày bạn muốn bắt đầu chuyến đi là khi nào?",
+    "travel_companion": "Bạn sẽ đi cùng ai?",
+    "duration": "Bạn muốn ở bao nhiêu đêm?",
+    "max_price": "Ngân sách tối đa cho một đêm là bao nhiêu?",
+    "amenities_priority": "Bạn ưu tiên tiện ích nào?"
 }
 
-# Gợi ý lựa chọn cho FE (multiple choice)
+# Gợi ý lựa chọn thông minh cho FE (multiple choice)
 FALLBACK_OPTIONS = {
-    "establishment_type": ["HOTEL","RESTAURANT"],
-    "travel_companion": ["single", "couple", "family", "friends"],
-    "amenities_priority": ["Ho boi", "Spa", "Bai do xe", "Gym", "Buffet sang", "Gan bien"],
-    "duration": ["1","2","3","4","5","6","7"]
+    "establishment_type": ["🏨 Khách sạn", "🍽️ Nhà hàng"],
+    "city": ["🏖️ Đà Nẵng", "🏛️ Hà Nội", "🌆 TP.HCM", "🏔️ Đà Lạt", "🌊 Nha Trang", "🏛️ Huế"],
+    "travel_companion": ["👤 Một mình", "👫 Cặp đôi", "👨‍👩‍👧‍👦 Gia đình", "👥 Bạn bè"],
+    "duration": ["1 đêm", "2 đêm", "3 đêm", "4 đêm", "5 đêm", "1 tuần"],
+    "max_price": ["💰 500K-1M", "💰 1M-2M", "💰 2M-3M", "💰 3M-5M", "💰 5M+"],
+    "amenities_priority": ["🏊‍♂️ Hồ bơi", "🧘‍♀️ Spa", "🏃‍♂️ Gym", "🍽️ Nhà hàng", "🚗 Bãi đậu xe", "🏖️ Gần biển", "🍳 Buffet sáng"]
 }
 
 
 def image_options_from_real_data(param_key: str, final_params: Dict[str, Any]) -> Optional[List[ImageOption]]:
-    """Gợi ý ảnh từ dữ liệu thật trong Chroma metadata (ưu tiên theo city)."""
+    """Gợi ý ảnh từ dữ liệu thật trong pgvector metadata (ưu tiên theo city)."""
     try:
-        if vectorstore is None:
+        if pgvector_service is None:
             return None
         # Lấy 12 cơ sở ở city nếu có
         city = (final_params or {}).get("city")
-        where = {"city": city} if city else None
-        coll = vectorstore._collection  # type: ignore
-        ids = coll.get(where=where, include=["metadatas", "documents"], limit=12)
-        metas = ids.get("metadatas") or []
+        where_clause = "metadata->>'city' = %s" if city else None
+        where_params = (city,) if city else None
+        
+        results = pgvector_service.similarity_search(
+            query_embedding=[0.0] * 1536,  # Dummy embedding cho metadata search
+            limit=12,
+            where_clause=where_clause,
+            where_params=where_params
+        )
+        
         options: List[ImageOption] = []
-        for m in metas:
-            if not isinstance(m, dict):
-                continue
-            name = m.get("name") or m.get("id")
-            img = m.get("image_url_main") or m.get("imageUrlMain")
+        for result in results:
+            metadata = result.get("metadata", {})
+            name = metadata.get("name") or metadata.get("id")
+            img = metadata.get("image_url_main") or metadata.get("imageUrlMain")
             if not img:
                 continue
             label = f"{name}"
@@ -169,245 +257,6 @@ def image_options_from_real_data(param_key: str, final_params: Dict[str, Any]) -
         return options or None
     except Exception:
         return None
-
-
-def detect_brand_name(mixed_text: str, city: Optional[str]) -> Optional[str]:
-    try:
-        if vectorstore is None:
-            return None
-        coll = vectorstore._collection  # type: ignore
-        where = {"city": city} if city else None
-        data = coll.get(where=where, include=["metadatas"], limit=50)
-        metas = data.get("metadatas") or []
-        text_lc = (mixed_text or "").lower()
-        best = None
-        for m in metas:
-            if not isinstance(m, dict):
-                continue
-            nm = (m.get("name") or "").strip()
-            if not nm:
-                continue
-            if nm.lower() in text_lc:
-                best = nm
-                break
-        return best
-    except Exception:
-        return None
-
-
-# --- City inference helpers ---
-def strip_accents(s: Optional[str]) -> str:
-    if not s:
-        return ""
-    return ''.join(c for c in unicodedata.normalize('NFD', str(s).strip()) if unicodedata.category(c) != 'Mn').lower()
-
-# canonical -> display
-CITY_DISPLAY = {
-    "danang": "Đà Nẵng",
-    "hanoi": "Hà Nội",
-    "hochiminh": "Hồ Chí Minh",
-    "nhatrang": "Nha Trang",
-    "dalat": "Đà Lạt",
-    "hue": "Huế",
-    "cantho": "Cần Thơ",
-}
-
-# aliases -> canonical
-CITY_ALIASES = {
-    "da nang": "danang",
-    "danang": "danang",
-    "dn": "danang",
-    "ha noi": "hanoi",
-    "hanoi": "hanoi",
-    "ho chi minh": "hochiminh",
-    "tp ho chi minh": "hochiminh",
-    "tphcm": "hochiminh",
-    "hcm": "hochiminh",
-    "sai gon": "hochiminh",
-    "saigon": "hochiminh",
-    "nha trang": "nhatrang",
-    "nhatrang": "nhatrang",
-    "da lat": "dalat",
-    "dalat": "dalat",
-}
-
-def infer_city_from_text(text: str) -> Optional[str]:
-    t = strip_accents(text)
-    # tìm alias dài trước để tránh va chạm
-    for alias in sorted(CITY_ALIASES.keys(), key=len, reverse=True):
-        if alias in t:
-            canonical = CITY_ALIASES[alias]
-            return CITY_DISPLAY.get(canonical, canonical)
-    return None
-
-
-def normalize_params(final_params: Dict[str, Any], user_prompt: str) -> Dict[str, Any]:
-    """Chuẩn hóa: tách brand name nếu phát hiện."""
-    params = dict(final_params or {})
-    city = params.get("city")
-    mixed = f"{user_prompt} {params.get('amenities_priority','')}"
-    # Suy luận loại cơ sở từ prompt nếu có
-    prompt_lc = (user_prompt or "").lower()
-    if not params.get("establishment_type"):
-        if any(k in prompt_lc for k in ["khach san","khách sạn","hotel"]):
-            params["establishment_type"] = "HOTEL"
-        elif any(k in prompt_lc for k in ["nha hang","nhà hàng","restaurant"]):
-            params["establishment_type"] = "RESTAURANT"
-    # Suy luận city nếu thiếu (accent-insensitive)
-    if not params.get("city"):
-        guessed = infer_city_from_text(user_prompt or "")
-        if guessed:
-            params["city"] = guessed
-    # --- Suy luận ngày/thời lượng từ prompt và đồng bộ hóa các trường liên quan ---
-    try:
-        text = (user_prompt or "")
-        # 1) Bắt các ngày dạng YYYY-MM-DD
-        date_strs = re.findall(r"(20\d{2}-\d{2}-\d{2})", text)
-        parsed_dates: List[datetime] = []
-        for ds in date_strs:
-            try:
-                parsed_dates.append(datetime.strptime(ds, "%Y-%m-%d"))
-            except Exception:
-                pass
-        # 2) Bắt số đêm/ngày từ prompt: "2 đêm/ngày"
-        dur_match = re.search(r"(\d+)\s*(đêm|dem|ngày|ngay)", unicodedata.normalize('NFD', text).lower())
-        prompt_nights: Optional[int] = None
-        if dur_match:
-            try:
-                prompt_nights = int(dur_match.group(1))
-            except Exception:
-                prompt_nights = None
-
-        # Đồng bộ từ params hiện có
-        check_in = None
-        check_out = None
-        try:
-            if params.get("check_in_date"):
-                check_in = datetime.strptime(str(params.get("check_in_date")), "%Y-%m-%d")
-        except Exception:
-            check_in = None
-        try:
-            if params.get("check_out_date"):
-                check_out = datetime.strptime(str(params.get("check_out_date")), "%Y-%m-%d")
-        except Exception:
-            check_out = None
-        duration_nights = None
-        try:
-            if params.get("duration") is not None:
-                duration_nights = int(str(params.get("duration")))
-        except Exception:
-            duration_nights = None
-
-        # Ưu tiên: nếu bắt được 2 ngày trong prompt → thiết lập từ-to & duration
-        if len(parsed_dates) >= 2:
-            start = min(parsed_dates[0], parsed_dates[1])
-            end = max(parsed_dates[0], parsed_dates[1])
-            nights = max(1, (end - start).days)
-            check_in = start
-            check_out = end
-            duration_nights = nights
-        elif len(parsed_dates) == 1 and check_in is None:
-            check_in = parsed_dates[0]
-
-        # Nếu có check_in và prompt có số đêm → tính check_out
-        if check_in is not None and prompt_nights and (check_out is None):
-            duration_nights = prompt_nights if (duration_nights is None) else duration_nights
-            if duration_nights is None or duration_nights <= 0:
-                duration_nights = prompt_nights
-            check_out = check_in + timedelta(days=duration_nights or 1)
-
-        # Nếu có check_in và duration → tính check_out
-        if check_in is not None and (duration_nights is not None) and check_out is None:
-            check_out = check_in + timedelta(days=max(1, duration_nights))
-
-        # Nếu có check_in và check_out nhưng thiếu duration → tính duration
-        if check_in is not None and check_out is not None and (duration_nights is None or duration_nights <= 0):
-            duration_nights = max(1, (check_out - check_in).days)
-
-        # Ghi lại vào params dưới dạng ISO yyyy-MM-dd
-        if check_in is not None:
-            params["check_in_date"] = check_in.strftime("%Y-%m-%d")
-        if check_out is not None:
-            params["check_out_date"] = check_out.strftime("%Y-%m-%d")
-        if duration_nights is not None and duration_nights > 0:
-            params["duration"] = duration_nights
-    except Exception:
-        # Bỏ qua lỗi parse ngày để không chặn luồng
-        pass
-
-    # --- Suy luận ngân sách tối đa (max_price) từ prompt: hỗ trợ 300k, 0.5tr, 1 triệu, 1.2m, 500.000đ, 500k vnd ---
-    try:
-        if not params.get("max_price"):
-            t = (user_prompt or "").lower()
-            # Chuẩn hoá dấu phẩy/chấm
-            t_norm = t.replace(",", ".").replace("đ", " đ ").replace("vnd", " vnd ")
-            # Các mẫu: số + đơn vị (k, nghìn, ngàn, tr, triệu, m) hoặc số có nghìn phân cách + đ/vnd
-            price: Optional[int] = None
-
-            # 1) 1.2tr / 1.2 m / 1,2 triệu / 300k / 250 nghin
-            m = re.search(r"(\d+(?:\.\d+)?)\s*(k|nghin|nghìn|ngan|ngàn|tr|triệu|trieu|m)\b", t_norm)
-            if m:
-                val = float(m.group(1))
-                unit = m.group(2)
-                if unit in ("k", "nghin", "nghìn", "ngan", "ngàn"):
-                    price = int(round(val * 1_000))
-                elif unit in ("tr", "triệu", "trieu", "m"):
-                    price = int(round(val * 1_000_000))
-            else:
-                # 2) 300.000 đ / 300000đ / 300000 vnd
-                m2 = re.search(r"(\d{1,3}(?:[\.\s]\d{3})+|\d+)\s*(đ|vnd)\b", t_norm)
-                if m2:
-                    num_str = m2.group(1).replace(".", "").replace(" ", "")
-                    try:
-                        price = int(num_str)
-                    except Exception:
-                        price = None
-
-            if price and price > 0:
-                params["max_price"] = price
-    except Exception:
-        pass
-    brand = detect_brand_name(mixed, city)
-    if brand:
-        params["brand_name"] = brand
-    # Chuẩn hoá cờ xác nhận tiện ích về boolean
-    if "_amenities_confirmed" in params:
-        try:
-            v = params.get("_amenities_confirmed")
-            if isinstance(v, str):
-                params["_amenities_confirmed"] = v.strip().lower() in ("true", "1", "yes")
-            else:
-                params["_amenities_confirmed"] = bool(v)
-        except Exception:
-            params["_amenities_confirmed"] = False
-    # Bỏ hỗ trợ style_vibe (đã loại bỏ)
-    return params
-
-
-def apply_defaults(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Bổ sung giá trị ngầm định; suy luận num_guests từ travel_companion hoặc số nhập tự do."""
-    p = dict(params or {})
-    # Suy luận num_guests từ travel_companion nếu chưa có
-    if not p.get("num_guests") and p.get("travel_companion"):
-        tc = str(p.get("travel_companion")).strip().lower()
-        mapping = {"single": 1, "couple": 2, "family": 4, "friends": 3}
-        try:
-            p["num_guests"] = mapping.get(tc, int(float(tc)))
-        except Exception:
-            p["num_guests"] = mapping.get(tc)
-    # Chuẩn hoá các giá trị khả dĩ của num_guests (single/couple -> số)
-    if p.get("num_guests"):
-        try:
-            # Nếu là chuỗi đặc biệt, map sang số
-            ng = str(p.get("num_guests")).strip().lower()
-            mapping = {"single": 1, "couple": 2}
-            if ng in mapping:
-                p["num_guests"] = mapping[ng]
-            else:
-                p["num_guests"] = int(float(ng))
-        except Exception:
-            p["num_guests"] = 2  # mặc định an toàn
-    return p
 
 
 class SearchRequest(BaseModel):
@@ -499,15 +348,26 @@ async def generate_quiz(req: QuizRequest):
 
     # Prompt cho LLM (tránh chèn trực tiếp JSON/Schema vào template để không bị bắt nhầm biến)
     template = """
-    Bạn là trợ lý AI đặt chỗ. Nhiệm vụ của bạn là thu thập 7 tham số sau: {param_order}.
+    Bạn là trợ lý AI đặt chỗ thông minh. Nhiệm vụ của bạn là thu thập thông tin đặt chỗ một cách tự nhiên và hiệu quả.
     
-    Quy tắc:
+    QUY TẮC THU THẬP THÔNG TIN:
     1. Phân tích 'user_prompt' và 'current_params' để suy luận và cập nhật các tham số có thể.
-    2. Sau khi cập nhật, kiểm tra xem còn thiếu tham số nào KHÔNG?
-    3. Nếu TẤT CẢ số tham số đã đầy đủ, đặt 'quiz_completed': true và trả về 'final_params'.
-    4. Nếu còn thiếu, xác định tham số còn thiếu ƯU TIÊN nhất (theo thứ tự: {param_order}). 
-    5. Đặt 'quiz_completed': false, 'key_to_collect': tham số thiếu đó, và tạo 'missing_quiz': MỘT câu hỏi ngắn gọn.
-    6. Đảm bảo 'max_price' là số nguyên (VND); 'duration' là số nguyên (ngày).
+    2. Ưu tiên thu thập theo thứ tự: {param_order}
+    3. Tạo câu hỏi ngắn gọn, thân thiện và dễ hiểu
+    4. Cung cấp options phù hợp để user dễ chọn
+    5. Tránh hỏi lại thông tin đã có
+    
+    THÔNG MINH TRONG CÂU HỎI:
+    - Nếu user nói "khách sạn" → establishment_type = "HOTEL"
+    - Nếu user nói "nhà hàng" → establishment_type = "RESTAURANT"  
+    - Nếu user nói "Đà Nẵng" → city = "Đà Nẵng"
+    - Nếu user nói "cặp đôi" → travel_companion = "couple"
+    - Nếu user nói "2 triệu" → max_price = 2000000
+    
+    XỬ LÝ ĐẶC BIỆT:
+    - Nếu còn thiếu tham số: đặt quiz_completed = false, tạo câu hỏi cho tham số thiếu
+    - Nếu đủ tham số: đặt quiz_completed = true, trả về final_params
+    - Đảm bảo max_price là số nguyên (VND), duration là số nguyên (ngày)
     
     Tham số hiện tại: {current_params}
     Yêu cầu mới nhất của người dùng: "{user_prompt}"
@@ -609,7 +469,7 @@ async def generate_quiz(req: QuizRequest):
 # --- API 2: RAG Search ---
 @app.post("/rag-search", response_model=List[SearchResult])
 async def rag_search(req: SearchRequest):
-    if not vectorstore:
+    if not pgvector_service or not embeddings:
         raise HTTPException(status_code=503, detail="Vector Store chưa được khởi tạo")
         
     # Lấy các tham số đã thu thập
@@ -638,9 +498,16 @@ async def rag_search(req: SearchRequest):
         f"Mô tả không gian và trải nghiệm."
     )
     
-    # Tăng k để có nhiều ứng viên hơn trước khi hậu kiểm
-    search_kwargs = {"k": 100}
-    results = vectorstore.similarity_search_with_score(query=query_text, **search_kwargs)
+    # Tạo embedding cho query text
+    try:
+        query_embedding = embeddings.embed_query(query_text)
+        results = pgvector_service.similarity_search(
+            query_embedding=query_embedding,
+            limit=100
+        )
+    except Exception as e:
+        logger.error(f"Lỗi khi tạo embedding cho query: {e}")
+        raise HTTPException(status_code=500, detail="Lỗi khi tạo embedding")
     
     # Chuẩn hoá so sánh không dấu
     def strip_accents(s: Optional[str]) -> str:
@@ -664,8 +531,8 @@ async def rag_search(req: SearchRequest):
     # Khử trùng lặp theo establishment_id và hậu kiểm city/amenities
     best_by_id: Dict[str, float] = {}
     metas_by_id: Dict[str, Dict[str, Any]] = {}
-    for doc, score in results:
-        meta = doc.metadata or {}
+    for result in results:
+        meta = result.get('metadata', {})
         est_id = meta.get('id')
         if not est_id:
             continue
@@ -690,10 +557,11 @@ async def rag_search(req: SearchRequest):
                     continue
             except Exception:
                 continue
-        # Lấy điểm tốt hơn (score nhỏ hơn coi là tốt hơn)
+        # Lấy điểm tốt hơn (similarity score cao hơn là tốt hơn)
+        similarity_score = result.get('similarity_score', 0)
         prev = best_by_id.get(est_id)
-        if prev is None or score < prev:
-            best_by_id[est_id] = score
+        if prev is None or similarity_score > prev:
+            best_by_id[est_id] = similarity_score
             metas_by_id[est_id] = meta
 
     suggestions = [SearchResult(establishment_id=eid, name=str((metas_by_id.get(eid) or {}).get('name') or '')) for eid in best_by_id.keys()]
@@ -817,7 +685,7 @@ async def rag_search(req: SearchRequest):
 async def add_establishment(req: AddEstablishmentRequest):
     # 0. Kiểm tra readiness của Vector Store
     logger.info("/add-establishment called with id=%s", req.id)
-    if vectorstore is None or embeddings is None:
+    if pgvector_service is None or embeddings is None:
         raise HTTPException(status_code=503, detail="Vector Store chưa được khởi tạo (thiếu embeddings/API key).")
     
     # 1. Lấy dữ liệu mới nhất từ PostgreSQL
@@ -839,78 +707,94 @@ async def add_establishment(req: AddEstablishmentRequest):
     logger.info("Fetched establishment name=%s, city=%s, len(description)=%s", new_data.get('name'), city, len(long_desc))
     logger.info("Description snippet: %s", long_desc[:300].replace("\n", " "))
     logger.info("Source_text snippet: %s", source_text[:300].replace("\n", " "))
+    
     try:
-        before = vectorstore._collection.count()  # type: ignore
+        before = pgvector_service.get_embedding_count()
     except Exception:
         before = None
-    logger.info("Chroma count before add: %s", before)
+    logger.info("PgVector count before add: %s", before)
 
     # 3. Tạo Embeddings và thêm vào Vector Store
     try:
-        vectorstore.add_texts(
-            texts=[source_text],
-            metadatas=[new_data]
+        # Tạo embedding cho content
+        embedding = embeddings.embed_query(source_text)
+        
+        # Thêm vào pgvector
+        success = pgvector_service.add_embedding(
+            establishment_id=req.id,
+            content=source_text,
+            metadata=new_data,
+            embedding=embedding
         )
-        try:
-            after = vectorstore._collection.count()  # type: ignore
-            detail_after = vectorstore._collection.get(  # type: ignore
-                where={"id": req.id},
-                include=["documents","metadatas"]
-            )
-            logger.info("Chroma detail after add: %s", detail_after)
-        except Exception:
-            after = None
-        logger.info("Added to Chroma: id=%s, count after=%s", req.id, after)
-        return {"status": "success", "message": f"Đã thêm {new_data['name']} vào Vector Store (Gemini).", "chroma_count": after, "chroma_detail": detail_after }
+        
+        if success:
+            try:
+                after = pgvector_service.get_embedding_count()
+                detail_after = pgvector_service.get_embedding_by_id(req.id)
+                logger.info("PgVector detail after add: %s", detail_after)
+            except Exception:
+                after = None
+                detail_after = None
+            logger.info("Added to PgVector: id=%s, count after=%s", req.id, after)
+            return {"status": "success", "message": f"Đã thêm {new_data['name']} vào Vector Store (Gemini).", "pgvector_count": after, "pgvector_detail": detail_after }
+        else:
+            raise Exception("Failed to add embedding to PgVector")
+            
     except Exception as e:
-        logger.error("Error adding to ChromaDB: %s", getattr(e, 'message', str(e)))
-        raise HTTPException(status_code=500, detail=f"Lỗi khi thêm vào ChromaDB: {e}")
+        logger.error("Error adding to PgVector: %s", getattr(e, 'message', str(e)))
+        raise HTTPException(status_code=500, detail=f"Lỗi khi thêm vào PgVector: {e}")
 
 # --- API 4: Xóa khỏi Vector Store ---
 @app.post("/remove-establishment")
 async def remove_establishment(req: AddEstablishmentRequest):
     logger.info("/remove-establishment called with id=%s", req.id)
-    if vectorstore is None:
+    if pgvector_service is None:
         raise HTTPException(status_code=503, detail="Vector Store chưa được khởi tạo.")
     
     try:
         # Lấy thông tin trước khi xóa để log
-        before_count = vectorstore._collection.count()  # type: ignore
+        before_count = pgvector_service.get_embedding_count()
         
-        # Xóa document khỏi ChromaDB
-        vectorstore._collection.delete(where={"id": req.id})  # type: ignore
+        # Xóa document khỏi PgVector
+        success = pgvector_service.remove_embedding(req.id)
         
-        after_count = vectorstore._collection.count()  # type: ignore
-        
-        logger.info("Removed from Chroma: id=%s, count before=%s, count after=%s", 
-                   req.id, before_count, after_count)
-        
-        return {
-            "status": "success", 
-            "message": f"Đã xóa establishment {req.id} khỏi Vector Store (Gemini).",
-            "chroma_count_before": before_count,
-            "chroma_count_after": after_count
-        }
+        if success:
+            after_count = pgvector_service.get_embedding_count()
+            
+            logger.info("Removed from PgVector: id=%s, count before=%s, count after=%s", 
+                       req.id, before_count, after_count)
+            
+            return {
+                "status": "success", 
+                "message": f"Đã xóa establishment {req.id} khỏi Vector Store (Gemini).",
+                "pgvector_count_before": before_count,
+                "pgvector_count_after": after_count
+            }
+        else:
+            raise Exception("Failed to remove embedding from PgVector")
         
     except Exception as e:
-        logger.error("Error removing from ChromaDB: %s", getattr(e, 'message', str(e)))
-        raise HTTPException(status_code=500, detail=f"Lỗi khi xóa khỏi ChromaDB: {e}")
+        logger.error("Error removing from PgVector: %s", getattr(e, 'message', str(e)))
+        raise HTTPException(status_code=500, detail=f"Lỗi khi xóa khỏi PgVector: {e}")
 
-# DEBUG: Truy vấn document đã lưu trong Chroma theo establishment id
+# DEBUG: Truy vấn document đã lưu trong PgVector theo establishment id
 @app.get("/debug/vector/{establishment_id}")
 async def debug_vector(establishment_id: str):
-    if vectorstore is None:
+    if pgvector_service is None:
         raise HTTPException(status_code=503, detail="Vector Store chưa sẵn sàng")
     try:
-        data = vectorstore._collection.get(  # type: ignore
-            where={"id": establishment_id},
-            include=["documents","metadatas"]
-        )
-        # Chuẩn hoá phản hồi gọn, chỉ trả về phần đầu document để xem nhanh
-        docs = data.get("documents") or []
-        metas = data.get("metadatas") or []
-        preview = [ (d[:400] if isinstance(d,str) else d) for d in docs ]
-        return {"found": len(docs), "documents_preview": preview, "metadatas": metas}
+        data = pgvector_service.get_embedding_by_id(establishment_id)
+        if data:
+            content_preview = data.get('content', '')[:400] if data.get('content') else ''
+            return {
+                "found": 1, 
+                "content_preview": content_preview, 
+                "metadata": data.get('metadata', {}),
+                "created_at": data.get('created_at'),
+                "updated_at": data.get('updated_at')
+            }
+        else:
+            return {"found": 0, "content_preview": "", "metadata": {}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Debug read error: {e}")
 
@@ -948,21 +832,240 @@ async def debug_db(establishment_id: str):
 
 
 
+# Agent endpoints
+@app.post("/agent/chat", response_model=AgentChatResponse)
+async def agent_chat(request: AgentChatRequest):
+    """Chat với Agent system"""
+    if not agent_orchestrator:
+        raise HTTPException(status_code=503, detail="Agent system not initialized")
+    
+    try:
+        from agent.types import UserProfile
+        
+        # Convert user_profile to UserProfile object if provided
+        user_profile = None
+        if request.user_profile:
+            user_profile = UserProfile(
+                preferences=request.user_profile.get("preferences", {}),
+                history=request.user_profile.get("history", []),
+                budget_range=request.user_profile.get("budget_range"),
+                preferred_cities=request.user_profile.get("preferred_cities", []),
+                preferred_amenities=request.user_profile.get("preferred_amenities", []),
+                travel_companion=request.user_profile.get("travel_companion")
+            )
+        
+        # Process message with orchestrator
+        response = agent_orchestrator.process_user_message(
+            message=request.message,
+            session_id=request.session_id,
+            user_profile=user_profile,
+            context=request.context
+        )
+        
+        # Convert SearchResult objects to dicts
+        results_data = []
+        for result in response.results:
+            results_data.append(SearchResultResponse(
+                establishment_id=result.establishment_id,
+                name=result.name,
+                relevance_score=result.relevance_score,
+                metadata=result.metadata,
+                explanation=result.explanation
+            ))
+        
+        return AgentChatResponse(
+            success=response.success,
+            results=results_data,
+            intent=response.intent.value,
+            strategy_used=response.strategy_used.value,
+            explanation=response.explanation,
+            suggestions=response.suggestions,
+            confidence=response.confidence,
+            processing_time=response.processing_time,
+            metadata=response.metadata
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in agent chat: {e}")
+        raise HTTPException(status_code=500, detail=f"Agent chat error: {str(e)}")
+
+@app.post("/agent/search", response_model=AgentChatResponse)
+async def agent_search(request: AgentSearchRequest):
+    """Tìm kiếm trực tiếp với RAG Agent"""
+    if not rag_agent:
+        raise HTTPException(status_code=503, detail="RAG Agent not initialized")
+    
+    try:
+        from agent.types import SearchStrategy
+        
+        # Determine strategy
+        strategy = None
+        if request.strategy:
+            try:
+                strategy = SearchStrategy(request.strategy.lower())
+            except ValueError:
+                strategy = None
+        
+        # Process query with RAG agent
+        response = rag_agent.process_query(
+            query=request.query,
+            context=request.context,
+            strategy=strategy
+        )
+        
+        # Convert SearchResult objects to dicts
+        results_data = []
+        for result in response.results:
+            results_data.append(SearchResultResponse(
+                establishment_id=result.establishment_id,
+                name=result.name,
+                relevance_score=result.relevance_score,
+                metadata=result.metadata,
+                explanation=result.explanation
+            ))
+        
+        return AgentChatResponse(
+            success=response.success,
+            results=results_data,
+            intent=response.intent.value,
+            strategy_used=response.strategy_used.value,
+            explanation=response.explanation,
+            suggestions=response.suggestions,
+            confidence=response.confidence,
+            processing_time=response.processing_time,
+            metadata=response.metadata
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in agent search: {e}")
+        raise HTTPException(status_code=500, detail=f"Agent search error: {str(e)}")
+
+@app.post("/agent/profile")
+async def update_user_profile(request: UserProfileRequest):
+    """Cập nhật user profile"""
+    if not agent_orchestrator:
+        raise HTTPException(status_code=503, detail="Agent system not initialized")
+    
+    try:
+        # Prepare profile updates
+        profile_updates = {}
+        if request.preferences is not None:
+            profile_updates["preferences"] = request.preferences
+        if request.budget_range is not None:
+            profile_updates["budget_range"] = request.budget_range
+        if request.preferred_cities is not None:
+            profile_updates["preferred_cities"] = request.preferred_cities
+        if request.preferred_amenities is not None:
+            profile_updates["preferred_amenities"] = request.preferred_amenities
+        if request.travel_companion is not None:
+            profile_updates["travel_companion"] = request.travel_companion
+        
+        # Update profile
+        success = agent_orchestrator.update_user_profile(
+            session_id=request.session_id,
+            profile_updates=profile_updates
+        )
+        
+        return {"success": success, "message": "Profile updated successfully" if success else "Failed to update profile"}
+        
+    except Exception as e:
+        logger.error(f"Error updating user profile: {e}")
+        raise HTTPException(status_code=500, detail=f"Profile update error: {str(e)}")
+
+@app.get("/agent/stats")
+async def get_agent_stats():
+    """Lấy thống kê về Agent system"""
+    stats = {}
+    
+    try:
+        # RAG Agent stats
+        if rag_agent:
+            stats["rag_agent"] = rag_agent.get_stats()
+        else:
+            stats["rag_agent"] = {"error": "RAG Agent not initialized"}
+        
+        # Orchestrator stats
+        if agent_orchestrator:
+            stats["orchestrator"] = agent_orchestrator.get_session_stats()
+        else:
+            stats["orchestrator"] = {"error": "Agent Orchestrator not initialized"}
+        
+        # System status
+        stats["system"] = {
+            "rag_agent_initialized": rag_agent is not None,
+            "orchestrator_initialized": agent_orchestrator is not None,
+            "embeddings_initialized": embeddings is not None,
+            "pgvector_initialized": pgvector_service is not None
+        }
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"Error getting agent stats: {e}")
+        raise HTTPException(status_code=500, detail=f"Stats error: {str(e)}")
+
+@app.get("/agent/conversation/{session_id}")
+async def get_conversation_state(session_id: str):
+    """Lấy trạng thái conversation"""
+    if not agent_orchestrator:
+        raise HTTPException(status_code=503, detail="Agent system not initialized")
+    
+    try:
+        conversation = agent_orchestrator.get_conversation_state(session_id)
+        
+        if not conversation:
+            return {"session_id": session_id, "exists": False}
+        
+        return {
+            "session_id": session_id,
+            "exists": True,
+            "state": conversation.state.value,
+            "current_query": conversation.current_query,
+            "search_history_count": len(conversation.search_history),
+            "user_profile": {
+                "preferred_cities": conversation.user_profile.preferred_cities,
+                "preferred_amenities": conversation.user_profile.preferred_amenities,
+                "travel_companion": conversation.user_profile.travel_companion,
+                "budget_range": conversation.user_profile.budget_range
+            },
+            "timestamp": conversation.timestamp
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting conversation state: {e}")
+        raise HTTPException(status_code=500, detail=f"Conversation state error: {str(e)}")
+
+@app.delete("/agent/conversation/{session_id}")
+async def end_conversation(session_id: str):
+    """Kết thúc conversation"""
+    if not agent_orchestrator:
+        raise HTTPException(status_code=503, detail="Agent system not initialized")
+    
+    try:
+        success = agent_orchestrator.end_conversation(session_id)
+        return {"success": success, "message": "Conversation ended" if success else "Conversation not found"}
+        
+    except Exception as e:
+        logger.error(f"Error ending conversation: {e}")
+        raise HTTPException(status_code=500, detail=f"End conversation error: {str(e)}")
+
 @app.get("/health")
 async def health():
     ready = {
         "llm_initialized": llm is not None,
         "embeddings_initialized": embeddings is not None,
-        "vectorstore_initialized": vectorstore is not None,
+        "pgvector_initialized": pgvector_service is not None,
+        "rag_agent_initialized": rag_agent is not None,
+        "agent_orchestrator_initialized": agent_orchestrator is not None,
     }
-    # Thử đếm số lượng bản ghi nếu có vectorstore
+    # Thử đếm số lượng bản ghi nếu có pgvector_service
     try:
         count = None
-        if vectorstore is not None:
-            count = vectorstore._collection.count()  # type: ignore
-        ready["chroma_count"] = count
+        if pgvector_service is not None:
+            count = pgvector_service.get_embedding_count()
+        ready["pgvector_count"] = count
     except Exception as e:
-        ready["chroma_count_error"] = getattr(e, "message", str(e))
+        ready["pgvector_count_error"] = getattr(e, "message", str(e))
     return ready
 
 # CHẠY SERVER (đúng module):

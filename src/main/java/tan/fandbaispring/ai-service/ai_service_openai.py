@@ -1,8 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_chroma import Chroma
-from chromadb import PersistentClient
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 import json
@@ -11,9 +9,18 @@ import psycopg2
 from typing import Dict, Any, List, Optional
 import logging
 from dotenv import load_dotenv
-import unicodedata
 import warnings
+import unicodedata
 from langchain_core._api import LangChainDeprecationWarning
+from pgvector_service import PgVectorService
+import sys
+import os
+
+# Import utils package directly from local ai-service folder
+from utils import (
+    strip_accents, normalize_params, apply_defaults,
+    infer_city_from_text, detect_brand_name
+)
 warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
 
 # --- CẤU HÌNH ---
@@ -31,7 +38,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 # *** CẤU HÌNH DB: Tách host và port để khớp với psycopg2 ***
-db_host, db_port = "localhost", 5432 # Mặc định
+db_host, db_port = "localhost", 5433 # PostgreSQL 18 port
 if ":" in "localhost:5432":
     db_host, db_port_str = "localhost:5432".split(":")
     db_port = int(db_port_str)
@@ -44,12 +51,10 @@ DB_CONFIG = {
     "password": "root" 
 }
 
-CHROMA_PATH = "./chroma_db_openai"
-
 # Khởi tạo LLM và Vector Store (có fallback)
 llm = None
 embeddings = None
-vectorstore = None
+pgvector_service = None
 try:
     # Thử model mới (tắt retry để không bị chờ backoff khi hết quota)
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0, max_retries=0)
@@ -64,16 +69,11 @@ except Exception as e1:
 
 try:
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    chroma_client = PersistentClient(path=CHROMA_PATH)
-    vectorstore = Chroma(
-        collection_name="fast_planner_establishments",
-        embedding_function=embeddings,
-        client=chroma_client
-    )
+    pgvector_service = PgVectorService(DB_CONFIG)
 except Exception as e:
     logging.warning("Vector store/embeddings init failed: %s", getattr(e, "message", str(e)))
     embeddings = None
-    vectorstore = None
+    pgvector_service = None
 
 
 # --- DTOs (Pydantic Models) ---
@@ -131,166 +131,35 @@ FALLBACK_OPTIONS = {
 
 
 def image_options_from_real_data(param_key: str, final_params: Dict[str, Any]) -> Optional[List[ImageOption]]:
-    """Gợi ý ảnh từ dữ liệu thật trong Chroma metadata (ưu tiên theo city)."""
+    """Gợi ý ảnh từ dữ liệu thật trong pgvector metadata (ưu tiên theo city)."""
     try:
-        if vectorstore is None:
+        if pgvector_service is None:
             return None
         # Lấy 12 cơ sở ở city nếu có
         city = (final_params or {}).get("city")
-        where = {"city": city} if city else None
-        coll = vectorstore._collection  # type: ignore
-        ids = coll.get(where=where, include=["metadatas", "documents"], limit=12)
-        metas = ids.get("metadatas") or []
+        where_clause = "metadata->>'city' = %s" if city else None
+        where_params = (city,) if city else None
+        
+        results = pgvector_service.similarity_search(
+            query_embedding=[0.0] * 1536,  # Dummy embedding cho metadata search
+            limit=12,
+            where_clause=where_clause,
+            where_params=where_params
+        )
+        
         options: List[ImageOption] = []
-        for m in metas:
-            if not isinstance(m, dict):
-                continue
-            name = m.get("name") or m.get("id")
-            img = m.get("image_url_main") or m.get("imageUrlMain")
+        for result in results:
+            metadata = result.get("metadata", {})
+            name = metadata.get("name") or metadata.get("id")
+            img = metadata.get("image_url_main") or metadata.get("imageUrlMain")
             if not img:
                 continue
             label = f"{name}"
-            # Suy ra style nhẹ theo mô tả nếu có
             params = None
-            
             options.append(ImageOption(label=label, image_url=img, value=name, params=params))
         return options or None
     except Exception:
         return None
-
-
-def detect_brand_name(mixed_text: str, city: Optional[str]) -> Optional[str]:
-    try:
-        if vectorstore is None:
-            return None
-        coll = vectorstore._collection  # type: ignore
-        where = {"city": city} if city else None
-        data = coll.get(where=where, include=["metadatas"], limit=50)
-        metas = data.get("metadatas") or []
-        text_lc = (mixed_text or "").lower()
-        best = None
-        for m in metas:
-            if not isinstance(m, dict):
-                continue
-            nm = (m.get("name") or "").strip()
-            if not nm:
-                continue
-            if nm.lower() in text_lc:
-                best = nm
-                break
-        return best
-    except Exception:
-        return None
-
-
-# --- City inference helpers ---
-def strip_accents(s: Optional[str]) -> str:
-    if not s:
-        return ""
-    return ''.join(c for c in unicodedata.normalize('NFD', str(s).strip()) if unicodedata.category(c) != 'Mn').lower()
-
-# canonical -> display
-CITY_DISPLAY = {
-    "danang": "Đà Nẵng",
-    "hanoi": "Hà Nội",
-    "hochiminh": "Hồ Chí Minh",
-    "nhatrang": "Nha Trang",
-    "dalat": "Đà Lạt",
-    "hue": "Huế",
-    "cantho": "Cần Thơ",
-}
-
-# aliases -> canonical
-CITY_ALIASES = {
-    "da nang": "danang",
-    "danang": "danang",
-    "dn": "danang",
-    "ha noi": "hanoi",
-    "hanoi": "hanoi",
-    "ho chi minh": "hochiminh",
-    "tp ho chi minh": "hochiminh",
-    "tphcm": "hochiminh",
-    "hcm": "hochiminh",
-    "sai gon": "hochiminh",
-    "saigon": "hochiminh",
-    "nha trang": "nhatrang",
-    "nhatrang": "nhatrang",
-    "da lat": "dalat",
-    "dalat": "dalat",
-}
-
-def infer_city_from_text(text: str) -> Optional[str]:
-    t = strip_accents(text)
-    # tìm alias dài trước để tránh va chạm
-    for alias in sorted(CITY_ALIASES.keys(), key=len, reverse=True):
-        if alias in t:
-            canonical = CITY_ALIASES[alias]
-            return CITY_DISPLAY.get(canonical, canonical)
-    return None
-
-
-def normalize_params(final_params: Dict[str, Any], user_prompt: str) -> Dict[str, Any]:
-    """Chuẩn hóa: gộp style_vibe vào amenities_priority; tách brand name nếu phát hiện."""
-    params = dict(final_params or {})
-    city = params.get("city")
-    mixed = f"{user_prompt} {params.get('amenities_priority','')} {params.get('style_vibe','')}"
-    # Suy luận loại cơ sở từ prompt nếu có
-    prompt_lc = (user_prompt or "").lower()
-    if not params.get("establishment_type"):
-        if any(k in prompt_lc for k in ["khach san","khách sạn","hotel"]):
-            params["establishment_type"] = "HOTEL"
-        elif any(k in prompt_lc for k in ["nha hang","nhà hàng","restaurant"]):
-            params["establishment_type"] = "RESTAURANT"
-    # Suy luận city nếu thiếu (accent-insensitive)
-    if not params.get("city"):
-        guessed = infer_city_from_text(user_prompt or "")
-        if guessed:
-            params["city"] = guessed
-    brand = detect_brand_name(mixed, city)
-    if brand:
-        params["brand_name"] = brand
-    # Gộp style_vibe vào amenities_priority
-    try:
-        style = str(params.get("style_vibe") or "").strip()
-        if style:
-            am = str(params.get("amenities_priority") or "").strip()
-            if am:
-                if style.lower() not in am.lower():
-                    params["amenities_priority"] = f"{am}, {style}"
-            else:
-                params["amenities_priority"] = style
-        # Loại bỏ style_vibe sau khi gộp để toàn hệ thống chỉ dùng amenities_priority
-        if "style_vibe" in params:
-            params.pop("style_vibe", None)
-    except Exception:
-        pass
-    return params
-
-
-def apply_defaults(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Bổ sung giá trị ngầm định; suy luận num_guests từ travel_companion hoặc số nhập tự do."""
-    p = dict(params or {})
-    # Suy luận num_guests từ travel_companion nếu chưa có
-    if not p.get("num_guests") and p.get("travel_companion"):
-        tc = str(p.get("travel_companion")).strip().lower()
-        mapping = {"single": 1, "couple": 2, "family": 4, "friends": 3}
-        try:
-            p["num_guests"] = mapping.get(tc, int(float(tc)))
-        except Exception:
-            p["num_guests"] = mapping.get(tc)
-    # Chuẩn hoá các giá trị khả dĩ của num_guests (single/couple -> số)
-    if p.get("num_guests"):
-        try:
-            # Nếu là chuỗi đặc biệt, map sang số
-            ng = str(p.get("num_guests")).strip().lower()
-            mapping = {"single": 1, "couple": 2}
-            if ng in mapping:
-                p["num_guests"] = mapping[ng]
-            else:
-                p["num_guests"] = int(float(ng))
-        except Exception:
-            p["num_guests"] = 2  # mặc định an toàn
-    return p
 
 
 class SearchRequest(BaseModel):
@@ -563,7 +432,7 @@ async def generate_quiz(req: QuizRequest):
 # --- API 2: RAG Search ---
 @app.post("/rag-search", response_model=List[SearchResult])
 async def rag_search(req: SearchRequest):
-    if not vectorstore: 
+    if not pgvector_service or not embeddings: 
         return []
         
     # Lấy các tham số đã thu thập
@@ -574,14 +443,21 @@ async def rag_search(req: SearchRequest):
     # Tạo Query mô tả chi tiết
     city_text = city or "địa điểm bất kỳ"
     query_text = (
-        f"Tìm kiếm cơ sở ở {city_text} với phong cách {style}. "
+        f"Tìm kiếm cơ sở ở {city_text}. "
         f"Cần tiện nghi phù hợp cho {companion} và ưu tiên các tiện ích: {amenities}. "
         f"Mô tả không gian và trải nghiệm."
     )
     
-    # Truy vấn k lớn hơn; filter city sẽ được hậu kiểm để tránh lệch dấu/biến thể
-    search_kwargs = {"k": 30}
-    results = vectorstore.similarity_search_with_score(query=query_text, **search_kwargs)
+    # Tạo embedding cho query text
+    try:
+        query_embedding = embeddings.embed_query(query_text)
+        results = pgvector_service.similarity_search(
+            query_embedding=query_embedding,
+            limit=30
+        )
+    except Exception as e:
+        logger.error(f"Lỗi khi tạo embedding cho query: {e}")
+        return []
     
     # Chuẩn hoá so sánh không dấu
     def strip_accents(s: Optional[str]) -> str:
@@ -595,8 +471,8 @@ async def rag_search(req: SearchRequest):
     # Khử trùng lặp theo establishment_id và hậu kiểm city/amenities
     best_by_id: Dict[str, float] = {}
     metas_by_id: Dict[str, Dict[str, Any]] = {}
-    for doc, score in results:
-        meta = doc.metadata or {}
+    for result in results:
+        meta = result.get('metadata', {})
         est_id = meta.get('id')
         if not est_id:
             continue
@@ -610,10 +486,11 @@ async def rag_search(req: SearchRequest):
             am_list = strip_accents(meta.get('amenities_list') or meta.get('amenities'))
             if amen_norm and amen_norm not in am_list:
                 continue
-        # Lấy điểm tốt hơn (score nhỏ hơn coi là tốt hơn)
+        # Lấy điểm tốt hơn (similarity score cao hơn là tốt hơn)
+        similarity_score = result.get('similarity_score', 0)
         prev = best_by_id.get(est_id)
-        if prev is None or score < prev:
-            best_by_id[est_id] = score
+        if prev is None or similarity_score > prev:
+            best_by_id[est_id] = similarity_score
             metas_by_id[est_id] = meta
 
     suggestions = [SearchResult(establishment_id=eid, relevance_score=best_by_id[eid]) for eid in best_by_id.keys()]
@@ -649,9 +526,8 @@ async def rag_search(req: SearchRequest):
         suggestions = uniq
 
     # 3) Fallback bổ sung: nếu vẫn không có cơ sở ở đúng city chứa amenities, đọc trực tiếp metadata theo city (accent đúng)
-    if city and amen_norm and vectorstore is not None:
+    if city and amen_norm and pgvector_service is not None:
         try:
-            coll = vectorstore._collection  # type: ignore
             # Thử cả city người dùng nhập và một số biến thể có dấu phổ biến
             city_variants = {city}
             if city_norm == 'da nang':
@@ -664,17 +540,21 @@ async def rag_search(req: SearchRequest):
             added = False
             for cv in city_variants:
                 try:
-                    data = coll.get(where={"city": cv}, include=["metadatas"], limit=200)
+                    results_fallback = pgvector_service.similarity_search(
+                        query_embedding=[0.0] * 1536,  # Dummy embedding
+                        limit=200,
+                        where_clause="metadata->>'city' = %s",
+                        where_params=(cv,)
+                    )
                 except Exception:
                     continue
-                metas = data.get('metadatas') or []
-                for m in metas:
-                    if not isinstance(m, dict):
-                        continue
-                    est_id = m.get('id')
+                
+                for result in results_fallback:
+                    metadata = result.get('metadata', {})
+                    est_id = metadata.get('id')
                     if not est_id:
                         continue
-                    am = strip_accents(m.get('amenities_list') or m.get('amenities'))
+                    am = strip_accents(metadata.get('amenities_list') or metadata.get('amenities'))
                     if amen_norm in am:
                         # Thêm nếu chưa có trong suggestions
                         if all(s.establishment_id != est_id for s in suggestions):
@@ -692,7 +572,7 @@ async def rag_search(req: SearchRequest):
 async def add_establishment(req: AddEstablishmentRequest):
     # 0. Kiểm tra readiness của Vector Store
     logger.info("/add-establishment called with id=%s", req.id)
-    if vectorstore is None or embeddings is None:
+    if pgvector_service is None or embeddings is None:
         raise HTTPException(status_code=503, detail="Vector Store chưa được khởi tạo (thiếu embeddings/API key).")
     
     # 1. Lấy dữ liệu mới nhất từ PostgreSQL
@@ -714,78 +594,94 @@ async def add_establishment(req: AddEstablishmentRequest):
     logger.info("Fetched establishment name=%s, city=%s, len(description)=%s", new_data.get('name'), city, len(long_desc))
     logger.info("Description snippet: %s", long_desc[:300].replace("\n", " "))
     logger.info("Source_text snippet: %s", source_text[:300].replace("\n", " "))
+    
     try:
-        before = vectorstore._collection.count()  # type: ignore
+        before = pgvector_service.get_embedding_count()
     except Exception:
         before = None
-    logger.info("Chroma count before add: %s", before)
+    logger.info("PgVector count before add: %s", before)
 
     # 3. Tạo Embeddings và thêm vào Vector Store
     try:
-        vectorstore.add_texts(
-            texts=[source_text],
-            metadatas=[new_data]
+        # Tạo embedding cho content
+        embedding = embeddings.embed_query(source_text)
+        
+        # Thêm vào pgvector
+        success = pgvector_service.add_embedding(
+            establishment_id=req.id,
+            content=source_text,
+            metadata=new_data,
+            embedding=embedding
         )
-        try:
-            after = vectorstore._collection.count()  # type: ignore
-            detail_after = vectorstore._collection.get(  # type: ignore
-                where={"id": req.id},
-                include=["documents","metadatas"]
-            )
-            logger.info("Chroma detail after add: %s", detail_after)
-        except Exception:
-            after = None
-        logger.info("Added to Chroma: id=%s, count after=%s", req.id, after)
-        return {"status": "success", "message": f"Đã thêm {new_data['name']} vào Vector Store (OpenAI).", "chroma_count": after, "chroma_detail": detail_after }
+        
+        if success:
+            try:
+                after = pgvector_service.get_embedding_count()
+                detail_after = pgvector_service.get_embedding_by_id(req.id)
+                logger.info("PgVector detail after add: %s", detail_after)
+            except Exception:
+                after = None
+                detail_after = None
+            logger.info("Added to PgVector: id=%s, count after=%s", req.id, after)
+            return {"status": "success", "message": f"Đã thêm {new_data['name']} vào Vector Store (OpenAI).", "pgvector_count": after, "pgvector_detail": detail_after }
+        else:
+            raise Exception("Failed to add embedding to PgVector")
+            
     except Exception as e:
-        logger.error("Error adding to ChromaDB: %s", getattr(e, 'message', str(e)))
-        raise HTTPException(status_code=500, detail=f"Lỗi khi thêm vào ChromaDB: {e}")
+        logger.error("Error adding to PgVector: %s", getattr(e, 'message', str(e)))
+        raise HTTPException(status_code=500, detail=f"Lỗi khi thêm vào PgVector: {e}")
 
 # --- API 4: Xóa khỏi Vector Store ---
 @app.post("/remove-establishment")
 async def remove_establishment(req: AddEstablishmentRequest):
     logger.info("/remove-establishment called with id=%s", req.id)
-    if vectorstore is None:
+    if pgvector_service is None:
         raise HTTPException(status_code=503, detail="Vector Store chưa được khởi tạo.")
     
     try:
         # Lấy thông tin trước khi xóa để log
-        before_count = vectorstore._collection.count()  # type: ignore
+        before_count = pgvector_service.get_embedding_count()
         
-        # Xóa document khỏi ChromaDB
-        vectorstore._collection.delete(where={"id": req.id})  # type: ignore
+        # Xóa document khỏi PgVector
+        success = pgvector_service.remove_embedding(req.id)
         
-        after_count = vectorstore._collection.count()  # type: ignore
-        
-        logger.info("Removed from Chroma: id=%s, count before=%s, count after=%s", 
-                   req.id, before_count, after_count)
-        
-        return {
-            "status": "success", 
-            "message": f"Đã xóa establishment {req.id} khỏi Vector Store (OpenAI).",
-            "chroma_count_before": before_count,
-            "chroma_count_after": after_count
-        }
+        if success:
+            after_count = pgvector_service.get_embedding_count()
+            
+            logger.info("Removed from PgVector: id=%s, count before=%s, count after=%s", 
+                       req.id, before_count, after_count)
+            
+            return {
+                "status": "success", 
+                "message": f"Đã xóa establishment {req.id} khỏi Vector Store (OpenAI).",
+                "pgvector_count_before": before_count,
+                "pgvector_count_after": after_count
+            }
+        else:
+            raise Exception("Failed to remove embedding from PgVector")
         
     except Exception as e:
-        logger.error("Error removing from ChromaDB: %s", getattr(e, 'message', str(e)))
-        raise HTTPException(status_code=500, detail=f"Lỗi khi xóa khỏi ChromaDB: {e}")
+        logger.error("Error removing from PgVector: %s", getattr(e, 'message', str(e)))
+        raise HTTPException(status_code=500, detail=f"Lỗi khi xóa khỏi PgVector: {e}")
 
-# DEBUG: Truy vấn document đã lưu trong Chroma theo establishment id
+# DEBUG: Truy vấn document đã lưu trong PgVector theo establishment id
 @app.get("/debug/vector/{establishment_id}")
 async def debug_vector(establishment_id: str):
-    if vectorstore is None:
+    if pgvector_service is None:
         raise HTTPException(status_code=503, detail="Vector Store chưa sẵn sàng")
     try:
-        data = vectorstore._collection.get(  # type: ignore
-            where={"id": establishment_id},
-            include=["documents","metadatas"]
-        )
-        # Chuẩn hoá phản hồi gọn, chỉ trả về phần đầu document để xem nhanh
-        docs = data.get("documents") or []
-        metas = data.get("metadatas") or []
-        preview = [ (d[:400] if isinstance(d,str) else d) for d in docs ]
-        return {"found": len(docs), "documents_preview": preview, "metadatas": metas}
+        data = pgvector_service.get_embedding_by_id(establishment_id)
+        if data:
+            content_preview = data.get('content', '')[:400] if data.get('content') else ''
+            return {
+                "found": 1, 
+                "content_preview": content_preview, 
+                "metadata": data.get('metadata', {}),
+                "created_at": data.get('created_at'),
+                "updated_at": data.get('updated_at')
+            }
+        else:
+            return {"found": 0, "content_preview": "", "metadata": {}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Debug read error: {e}")
 
@@ -827,16 +723,16 @@ async def health():
     ready = {
         "llm_initialized": llm is not None,
         "embeddings_initialized": embeddings is not None,
-        "vectorstore_initialized": vectorstore is not None,
+        "pgvector_initialized": pgvector_service is not None,
     }
-    # Thử đếm số lượng bản ghi nếu có vectorstore
+    # Thử đếm số lượng bản ghi nếu có pgvector_service
     try:
         count = None
-        if vectorstore is not None:
-            count = vectorstore._collection.count()  # type: ignore
-        ready["chroma_count"] = count
+        if pgvector_service is not None:
+            count = pgvector_service.get_embedding_count()
+        ready["pgvector_count"] = count
     except Exception as e:
-        ready["chroma_count_error"] = getattr(e, "message", str(e))
+        ready["pgvector_count_error"] = getattr(e, "message", str(e))
     return ready
 
 # CHẠY SERVER (đúng module):
